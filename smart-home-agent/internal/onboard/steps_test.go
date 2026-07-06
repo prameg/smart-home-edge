@@ -28,6 +28,9 @@ type fakeDevice struct {
 	options  map[string]map[string]any
 	autoOff  map[string]bool
 
+	coreConfig    CoreConfig
+	coreConfigSet bool
+
 	claim ClaimInfo
 }
 
@@ -70,6 +73,13 @@ func (f *fakeDevice) CreateLongLivedToken(context.Context, string, string) (stri
 }
 
 func (f *fakeDevice) FinishOnboarding(context.Context) error { return nil }
+
+func (f *fakeDevice) UpdateCoreConfig(_ context.Context, cfg CoreConfig) error {
+	f.coreConfig = cfg
+	f.coreConfigSet = true
+
+	return nil
+}
 
 func (f *fakeDevice) SetToken(t string) { f.token = t }
 func (f *fakeDevice) Token() string     { return f.token }
@@ -174,7 +184,7 @@ func TestOwnerAndTokenStepBranches(t *testing.T) {
 
 	t.Run("fresh device creates owner", func(t *testing.T) {
 		dev := newFakeDevice()
-		st := &State{Client: dev, Manifest: testManifest(""), Owner: OwnerConfig{Username: "admin", Password: "pw"}}
+		st := &State{Client: dev, Manifest: testManifest(""), Owner: OwnerConfig{Username: "admin", Password: "pw"}, CoreConfig: CoreConfig{Country: "SA"}}
 
 		if err := step.Act(context.Background(), st); err != nil {
 			t.Fatalf("Act: %v", err)
@@ -184,6 +194,9 @@ func TestOwnerAndTokenStepBranches(t *testing.T) {
 		}
 		if dev.Token() != "long-lived" {
 			t.Errorf("expected long-lived token stored, got %q", dev.Token())
+		}
+		if !dev.coreConfigSet || dev.coreConfig.Country != "SA" {
+			t.Errorf("owner step should apply the core config (country), got set=%v cfg=%+v", dev.coreConfigSet, dev.coreConfig)
 		}
 		if err := step.Verify(context.Background(), st); err != nil {
 			t.Errorf("Verify: %v", err)

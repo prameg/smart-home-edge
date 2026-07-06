@@ -38,6 +38,10 @@ type DeviceAPI interface {
 	// (core_config/analytics/integration) so the frontend does not reappear at
 	// the wizard; failures are non-fatal.
 	FinishOnboarding(ctx context.Context) error
+	// UpdateCoreConfig sets Home Assistant's core configuration (country/time
+	// zone/…) that the headless onboarding flow never sets, so the device is not
+	// left warning that no country is configured. An empty config is a no-op.
+	UpdateCoreConfig(ctx context.Context, cfg CoreConfig) error
 	// SetToken stores the token used to authenticate all later Supervisor calls.
 	SetToken(token string)
 	// Token returns the stored token (empty before authentication).
@@ -130,6 +134,49 @@ type OwnerConfig struct {
 	Language string
 }
 
+// CoreConfig is the subset of Home Assistant's core configuration the onboarding
+// flow sets so the finished device is not left warning about missing location
+// data (notably "No country has been configured"). Every field is optional; an
+// empty one is not sent, and an all-empty config is a no-op.
+type CoreConfig struct {
+	// Country is an ISO-3166 alpha-2 code (e.g. "SA"). Setting it clears the
+	// "No country has been configured" repair Core surfaces after a headless
+	// onboarding.
+	Country string
+	// TimeZone is an IANA name (e.g. "Asia/Riyadh"); empty leaves HA's default.
+	TimeZone string
+	// Currency is an ISO-4217 code (e.g. "SAR"); empty leaves HA's default.
+	Currency string
+	// UnitSystem is "metric" or "us_customary"; empty leaves HA's default.
+	UnitSystem string
+	// Language is the instance UI language (e.g. "en"); empty leaves HA's
+	// default.
+	Language string
+}
+
+// fields returns only the set core-config keys, in the shape config/core/update
+// expects.
+func (c CoreConfig) fields() map[string]any {
+	out := map[string]any{}
+	if c.Country != "" {
+		out["country"] = c.Country
+	}
+	if c.TimeZone != "" {
+		out["time_zone"] = c.TimeZone
+	}
+	if c.Currency != "" {
+		out["currency"] = c.Currency
+	}
+	if c.UnitSystem != "" {
+		out["unit_system"] = c.UnitSystem
+	}
+	if c.Language != "" {
+		out["language"] = c.Language
+	}
+
+	return out
+}
+
 // Timeouts bounds the two waits that can legitimately take minutes on real
 // hardware: Core coming up after a fresh flash, and the agent provisioning
 // against the cloud after it starts.
@@ -146,6 +193,7 @@ type State struct {
 	Client       DeviceAPI
 	Manifest     *fleet.Manifest
 	Owner        OwnerConfig
+	CoreConfig   CoreConfig
 	AgentOptions map[string]any
 	Timeouts     Timeouts
 

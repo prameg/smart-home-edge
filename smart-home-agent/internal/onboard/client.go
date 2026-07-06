@@ -296,6 +296,13 @@ func (c *Client) ExchangeCode(ctx context.Context, authCode string) (string, err
 // CreateLongLivedToken upgrades a short-lived access token into a long-lived one
 // over the WebSocket API (the only place HA mints them), so the token outlasts a
 // slow add-on install / Core download.
+//
+// A previous run leaves a long-lived token registered under clientName, and HA
+// refuses to mint a second one with the same client_name — its handler raises a
+// bare ValueError that surfaces as a generic "unknown_error", so a naive re-run
+// could NEVER mint one again. We therefore delete any stale token with our name
+// first (see purgeLongLivedTokens), which makes minting idempotent across the
+// resumable re-runs this tool is built around.
 func (c *Client) CreateLongLivedToken(ctx context.Context, accessToken, clientName string) (string, error) {
 	conn, err := c.dialAuthedWS(ctx, accessToken)
 	if err != nil {
@@ -308,13 +315,126 @@ func (c *Client) CreateLongLivedToken(ctx context.Context, accessToken, clientNa
 		_ = conn.Close()
 	}()
 
-	if err := conn.WriteJSON(map[string]any{
-		"id":          1,
+	c.purgeLongLivedTokens(conn, clientName)
+
+	// A high, distinct id keeps this out of the way of the purge round-trips
+	// above (list=1, deletes=2…), which share this connection.
+	result, err := wsRoundTrip(conn, 1000, map[string]any{
 		"type":        "auth/long_lived_access_token",
 		"client_name": clientName,
 		"lifespan":    3650,
-	}); err != nil {
-		return "", fmt.Errorf("long-lived token: request: %w", err)
+	})
+	if err != nil {
+		return "", fmt.Errorf("long-lived token: %w", err)
+	}
+
+	var token string
+	if err := json.Unmarshal(result, &token); err != nil {
+		return "", fmt.Errorf("long-lived token: decode: %w", err)
+	}
+
+	return token, nil
+}
+
+// purgeLongLivedTokens deletes any existing long-lived token whose client_name
+// matches, so CreateLongLivedToken can re-mint under the same name on a re-run.
+// It is best-effort on the same authenticated connection: any failure here just
+// risks the mint hitting "already exists", which the caller already tolerates by
+// falling back to the short-lived access token.
+func (c *Client) purgeLongLivedTokens(conn *websocket.Conn, clientName string) {
+	result, err := wsRoundTrip(conn, 1, map[string]any{"type": "auth/refresh_tokens"})
+	if err != nil {
+		c.log.Debug("list refresh tokens failed (non-fatal)", "error", err)
+
+		return
+	}
+
+	var tokens []struct {
+		ID         string `json:"id"`
+		Type       string `json:"type"`
+		ClientName string `json:"client_name"`
+	}
+	if err := json.Unmarshal(result, &tokens); err != nil {
+		c.log.Debug("decode refresh tokens failed (non-fatal)", "error", err)
+
+		return
+	}
+
+	id := 2
+	for _, t := range tokens {
+		if t.Type != "long_lived_access_token" || t.ClientName != clientName {
+			continue
+		}
+
+		if _, err := wsRoundTrip(conn, id, map[string]any{
+			"type":             "auth/delete_refresh_token",
+			"refresh_token_id": t.ID,
+		}); err != nil {
+			c.log.Debug("delete stale long-lived token failed (non-fatal)", "id", t.ID, "error", err)
+		}
+		id++
+	}
+}
+
+// UpdateCoreConfig sets Home Assistant's core configuration (country, time zone,
+// currency, unit system, language) over the WS config/core/update command.
+//
+// The headless onboarding flow never sets a location — the REST core_config
+// onboarding step only marks itself done — so Core is left warning "No country
+// has been configured". This fills in whatever the operator supplied. Only
+// non-empty fields are sent; an empty config is a no-op (no connection opened).
+func (c *Client) UpdateCoreConfig(ctx context.Context, cfg CoreConfig) error {
+	fields := cfg.fields()
+	if len(fields) == 0 {
+		return nil
+	}
+
+	conn, err := c.dialAuthedWS(ctx, c.token)
+	if err != nil {
+		return fmt.Errorf("core config: %w", err)
+	}
+	defer conn.Close()
+
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	cmd := map[string]any{"type": "config/core/update"}
+	for k, v := range fields {
+		cmd[k] = v
+	}
+
+	if _, err := wsRoundTrip(conn, 1, cmd); err != nil {
+		return fmt.Errorf("core config: %w", err)
+	}
+
+	return nil
+}
+
+// wsResultErr is a Home Assistant WebSocket command failure (success:false),
+// carrying HA's error code + message.
+type wsResultErr struct {
+	code    string
+	message string
+}
+
+func (e *wsResultErr) Error() string {
+	if e.code == "" {
+		return e.message
+	}
+
+	return fmt.Sprintf("%s: %s", e.code, e.message)
+}
+
+// wsRoundTrip sends cmd tagged with id on an already-authenticated WebSocket
+// connection and returns the result payload for that id, skipping any unrelated
+// frames. Callers own dialing/closing the connection and must use distinct ids
+// for concurrent-in-flight commands on the same connection.
+func wsRoundTrip(conn *websocket.Conn, id int, cmd map[string]any) (json.RawMessage, error) {
+	cmd["id"] = id
+	if err := conn.WriteJSON(cmd); err != nil {
+		return nil, fmt.Errorf("send: %w", err)
 	}
 
 	for {
@@ -324,25 +444,21 @@ func (c *Client) CreateLongLivedToken(ctx context.Context, accessToken, clientNa
 			Success bool            `json:"success"`
 			Result  json.RawMessage `json:"result"`
 			Error   struct {
+				Code    string `json:"code"`
 				Message string `json:"message"`
 			} `json:"error"`
 		}
 		if err := conn.ReadJSON(&frame); err != nil {
-			return "", fmt.Errorf("long-lived token: read result: %w", err)
+			return nil, fmt.Errorf("read: %w", err)
 		}
-		if frame.Type != "result" || frame.ID != 1 {
+		if frame.Type != "result" || frame.ID != id {
 			continue
 		}
 		if !frame.Success {
-			return "", fmt.Errorf("long-lived token: %s", frame.Error.Message)
+			return nil, &wsResultErr{code: frame.Error.Code, message: frame.Error.Message}
 		}
 
-		var token string
-		if err := json.Unmarshal(frame.Result, &token); err != nil {
-			return "", fmt.Errorf("long-lived token: decode: %w", err)
-		}
-
-		return token, nil
+		return frame.Result, nil
 	}
 }
 

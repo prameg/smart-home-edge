@@ -333,6 +333,126 @@ func TestSupervisorErrorSurfacesMessage(t *testing.T) {
 	}
 }
 
+// newWSClient plays HA's websocket auth handshake, then delegates each command
+// to handle (which returns a result payload, or an error relayed as
+// success:false). It is the seam for exercising the auth-token / core-config WS
+// calls the supervisor/api helper does not cover.
+func newWSClient(t *testing.T, handle func(msgType string, msg map[string]any) (any, error)) *Client {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/websocket", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		_ = conn.WriteJSON(map[string]any{"type": "auth_required"})
+		var auth map[string]any
+		if err := conn.ReadJSON(&auth); err != nil {
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "auth_ok"})
+
+		for {
+			var msg map[string]any
+			if err := conn.ReadJSON(&msg); err != nil {
+				return
+			}
+			id, _ := msg["id"].(float64)
+			typ, _ := msg["type"].(string)
+
+			res, herr := handle(typ, msg)
+			if herr != nil {
+				_ = conn.WriteJSON(map[string]any{"id": int(id), "type": "result", "success": false, "error": map[string]any{"code": "unknown_error", "message": herr.Error()}})
+
+				continue
+			}
+			_ = conn.WriteJSON(map[string]any{"id": int(id), "type": "result", "success": true, "result": res})
+		}
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := New(srv.URL, testLog())
+	c.SetToken("test-token")
+
+	return c
+}
+
+// A re-run's mint must first delete the stale long-lived token it left last time
+// (HA refuses a duplicate client_name) — and only that one, not other tokens.
+func TestCreateLongLivedTokenPurgesStale(t *testing.T) {
+	deleted := make(chan string, 8)
+	c := newWSClient(t, func(typ string, msg map[string]any) (any, error) {
+		switch typ {
+		case "auth/refresh_tokens":
+			return []map[string]any{
+				{"id": "normal-token", "type": "normal", "client_name": "smart-onboard"},
+				{"id": "stale-llt", "type": "long_lived_access_token", "client_name": "smart-onboard"},
+				{"id": "someone-else", "type": "long_lived_access_token", "client_name": "grafana"},
+			}, nil
+		case "auth/delete_refresh_token":
+			deleted <- msg["refresh_token_id"].(string)
+
+			return map[string]any{}, nil
+		case "auth/long_lived_access_token":
+			return "LLT-new", nil
+		default:
+			return nil, fmt.Errorf("unexpected command %q", typ)
+		}
+	})
+
+	token, err := c.CreateLongLivedToken(context.Background(), "access", "smart-onboard")
+	if err != nil {
+		t.Fatalf("CreateLongLivedToken: %v", err)
+	}
+	if token != "LLT-new" {
+		t.Errorf("expected freshly minted token, got %q", token)
+	}
+
+	close(deleted)
+	var got []string
+	for id := range deleted {
+		got = append(got, id)
+	}
+	if len(got) != 1 || got[0] != "stale-llt" {
+		t.Errorf("only the stale long-lived token with our name should be deleted, got %v", got)
+	}
+}
+
+func TestUpdateCoreConfig(t *testing.T) {
+	got := make(chan map[string]any, 1)
+	c := newWSClient(t, func(typ string, msg map[string]any) (any, error) {
+		if typ == "config/core/update" {
+			got <- msg
+		}
+
+		return map[string]any{}, nil
+	})
+
+	if err := c.UpdateCoreConfig(context.Background(), CoreConfig{Country: "SA", TimeZone: "Asia/Riyadh"}); err != nil {
+		t.Fatalf("UpdateCoreConfig: %v", err)
+	}
+
+	msg := <-got
+	if msg["country"] != "SA" || msg["time_zone"] != "Asia/Riyadh" {
+		t.Errorf("core config not sent as expected: %+v", msg)
+	}
+}
+
+// An empty core config must not even open a connection, so it is safe on a
+// device whose location is already set (nothing to change).
+func TestUpdateCoreConfigEmptyIsNoop(t *testing.T) {
+	c := New("http://127.0.0.1:0", testLog())
+	c.SetToken("t")
+
+	if err := c.UpdateCoreConfig(context.Background(), CoreConfig{}); err != nil {
+		t.Fatalf("empty core config should be a no-op, got %v", err)
+	}
+}
+
 func TestClaimInfoFromLogs(t *testing.T) {
 	logs := `time=2026-07-06T10:00:00Z level=INFO msg=provisioned uid=9f8c2b10-0000-4a1b-9c3d-abcdef012345 claim_status=unclaimed mqtt_username=gw_x
 time=2026-07-06T10:00:01Z level=WARN msg="gateway is UNCLAIMED — enter this claim code to add it to a home" claim_code=WXYZ-2345`

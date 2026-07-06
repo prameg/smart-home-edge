@@ -53,6 +53,14 @@ func serveHAWebSocket(w http.ResponseWriter, r *http.Request, dispatch func(endp
 		switch msg.Type {
 		case "auth/long_lived_access_token":
 			_ = conn.WriteJSON(map[string]any{"id": msg.ID, "type": "result", "success": true, "result": "LLT-e2e"})
+		case "auth/refresh_tokens":
+			// No stale tokens on the mock; a fresh list means the purge is a
+			// clean no-op before the mint above.
+			_ = conn.WriteJSON(map[string]any{"id": msg.ID, "type": "result", "success": true, "result": []any{}})
+		case "auth/delete_refresh_token":
+			_ = conn.WriteJSON(map[string]any{"id": msg.ID, "type": "result", "success": true, "result": map[string]any{}})
+		case "config/core/update":
+			_ = conn.WriteJSON(map[string]any{"id": msg.ID, "type": "result", "success": true, "result": map[string]any{}})
 		case "supervisor/api":
 			data, derr := dispatch(msg.Endpoint, msg.Method, msg.Data)
 			if derr != nil {

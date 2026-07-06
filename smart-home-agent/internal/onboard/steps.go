@@ -108,17 +108,25 @@ func ownerAndTokenStep(reporter Reporter) Step {
 
 			token, err := st.Client.CreateLongLivedToken(ctx, accessToken, "smart-onboard")
 			if err != nil {
-				// A short-lived token still gets us through the run; warn and
-				// proceed rather than failing onboarding on a token-lifespan
-				// nicety.
-				reporter.Info(fmt.Sprintf("could not mint a long-lived token (%v); using the short-lived access token", err))
+				// A short-lived token still gets us through a normal run; warn
+				// and proceed rather than failing onboarding on a token-lifespan
+				// nicety. (The long-lived token only matters when a run outlasts
+				// the ~30-min access-token TTL, e.g. a slow first-boot install.)
+				reporter.Info(fmt.Sprintf("long-lived token unavailable (%v); continuing with the short-lived access token", err))
 				token = accessToken
 			}
 
 			st.Client.SetToken(token)
 
 			if err := st.Client.FinishOnboarding(ctx); err != nil {
-				reporter.Info(fmt.Sprintf("finishing the onboarding wizard reported: %v (continuing)", err))
+				reporter.Info(fmt.Sprintf("could not finish the HA onboarding wizard (%v); continuing — the owner + token is all onboarding needs", err))
+			}
+
+			// Set the location Core needs but the headless flow never supplies,
+			// so the finished device does not warn "No country has been
+			// configured". Non-fatal: it is a polish step, not a gate.
+			if err := st.Client.UpdateCoreConfig(ctx, st.CoreConfig); err != nil {
+				reporter.Info(fmt.Sprintf("could not set the country/location (%v); continuing — set it later in HA settings", err))
 			}
 
 			return nil

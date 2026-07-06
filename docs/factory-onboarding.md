@@ -94,7 +94,35 @@ plain-Linux node installer) — recorded here as the direction, **not built yet*
 1. **Flash stock HAOS** onto the gateway (Pi 4/5, x86, ODROID…) and boot it on
    the network. First boot downloads Core, which can take a few minutes.
 2. **Run `smart-onboard`** from a companion machine on the same network (build
-   it from `smart-home-agent/cmd/smart-onboard`):
+   it from `smart-home-agent/cmd/smart-onboard`). With no flags it runs a
+   **guided flow**: it discovers the gateway on the LAN over mDNS and then
+   prompts for the remaining settings with sensible defaults (press enter to
+   accept each), ending with a confirmation summary before it starts:
+
+   ```bash
+   smart-onboard
+   ```
+
+   ```
+   Searching the network for a Home Assistant gateway…
+     found Home at http://192.168.1.42:8123
+   Cloud base URL (e.g. https://app.example.com): https://app.example.com
+   Factory key: fk-abc123
+   Broker host [app.example.com]:
+   Broker port [8883]:
+   Use TLS to the broker (y/n) [y]:
+   HA owner username (used to log in on a re-run) [admin]:
+   HA owner password (set on a fresh device, or the existing one on a re-run): hunter2
+   Country code [SA]:
+
+   Ready to onboard with:
+     gateway:  http://192.168.1.42:8123
+     …
+   Proceed? (y/n) [y]:
+   ```
+
+3. **Or specify everything up front** (factory stations / CI). Pass `--yes` to
+   disable prompting; the host is still auto-discovered when `--host` is omitted:
 
    ```bash
    smart-onboard \
@@ -102,17 +130,47 @@ plain-Linux node installer) — recorded here as the direction, **not built yet*
      --cloud-base-url https://app.example.com \
      --factory-key <factory-key> \
      --mqtt-host broker.example.com --mqtt-port 8883 --mqtt-tls \
-     --owner-password <owner-password>
+     --owner-password <owner-password> --country SA --yes
    ```
 
    Secrets can come from flags, from env (`SMART_ONBOARD_FACTORY_KEY`,
    `SMART_ONBOARD_OWNER_PASSWORD`), or interactively. The factory key is entered
    into the CLI — it is never baked into an image or a script.
-3. **Read the claim code** off the final screen and enter it in the Smart Home
+4. **Read the claim code** off the final screen and enter it in the Smart Home
    app to bind the gateway to a home.
 
 If any step fails, the CLI prints which step failed and why; fix the cause and
 **re-run the same command** — it resumes from where it stopped.
+
+### CLI UX contract (how it is built)
+
+The CLI is designed so the happy path needs no arguments and the automated path
+needs no prompts — one binary, two entry points:
+
+- **Zero-config discovery.** When `--host` is omitted it browses mDNS for
+  `_home-assistant._tcp` (HAOS advertises this once Core is up, carrying the
+  instance name + a reachable URL). One hit is used automatically; several show
+  a picker (interactive) or the first is used (with `--yes`); none falls back to
+  the `homeassistant.local` default / a prompt. Discovery is best-effort — a
+  quiet or mDNS-unfriendly network simply falls through to the prompt/default.
+- **Developer mode (`--dev`).** A local HA — a VirtualBox/UTM VM that NATs
+  `guest:8123` onto the host's loopback — is invisible to mDNS (its announcement
+  carries the guest's internal IP, not `127.0.0.1`). `--dev` additionally probes
+  the well-known local URLs (`http://127.0.0.1:8123`, `http://homeassistant.local:8123`),
+  defaults the host to `127.0.0.1:8123`, and defaults the broker to plaintext
+  (`--mqtt-tls=false`) — the usual local-broker setup. Production runs omit it.
+- **Guided prompts with defaults.** With a terminal attached and no `--yes`, any
+  value not passed by flag (and not already in the environment, for secrets) is
+  prompted with its default in brackets — enter accepts it. The broker host
+  defaults to the cloud host, and the **owner username** is prompted (not just
+  defaulted) because it is the login identity on a re-run against an already-owned
+  device. A masked summary is confirmed before the run.
+- **Non-interactive by contract.** Piped stdin or `--yes` disables every prompt;
+  missing required inputs (`--cloud-base-url`, `--mqtt-host`, factory key, owner
+  password) fail fast with a message that names the flag and its env fallback.
+- **Country/location.** `--country` (default `SA`; plus optional `--timezone`,
+  `--currency`, `--unit-system`) is applied to HA core config after onboarding,
+  so the finished device is not left warning that no country is configured.
 
 ### Troubleshooting
 
@@ -157,7 +215,7 @@ If any step fails, the CLI prints which step failed and why; fix the cause and
 | Step | Action |
 | ---- | ------ |
 | `connect` | Wait for Core's API to answer (bounded by `--wait-core`). |
-| `owner-and-token` | Create the HA owner (or log in on a re-run), mint a long-lived token. |
+| `owner-and-token` | Create the HA owner (or log in on a re-run), mint a long-lived token (re-run-safe: the previous run's token is purged first, since HA refuses a duplicate), and set core config (country/time zone) so the device isn't left warning about missing location. |
 | `addon-repository` | Register this repo (and any community add-on repos) in the add-on store. |
 | `install-addons` | Install the manifest's add-ons (agent + Mosquitto + Zigbee2MQTT + Matter Server), pinning versions when the release is populated. |
 | `configure-agent` | Set the agent add-on options (`cloud_base_url`, `factory_key`, `mqtt_*`). |
