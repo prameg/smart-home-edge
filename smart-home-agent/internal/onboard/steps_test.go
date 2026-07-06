@@ -24,6 +24,7 @@ type fakeDevice struct {
 
 	installs map[string]int
 	starts   map[string]int
+	restarts map[string]int
 	options  map[string]map[string]any
 	autoOff  map[string]bool
 
@@ -35,6 +36,7 @@ func newFakeDevice() *fakeDevice {
 		addons:   map[string]*AddonInfo{},
 		installs: map[string]int{},
 		starts:   map[string]int{},
+		restarts: map[string]int{},
 		options:  map[string]map[string]any{},
 		autoOff:  map[string]bool{},
 	}
@@ -131,6 +133,15 @@ func (f *fakeDevice) SetAddonAutoUpdate(_ context.Context, slug string, enabled 
 
 func (f *fakeDevice) StartAddon(_ context.Context, slug string) error {
 	f.starts[slug]++
+	if info, ok := f.addons[slug]; ok {
+		info.State = "started"
+	}
+
+	return nil
+}
+
+func (f *fakeDevice) RestartAddon(_ context.Context, slug string) error {
+	f.restarts[slug]++
 	if info, ok := f.addons[slug]; ok {
 		info.State = "started"
 	}
@@ -258,6 +269,52 @@ func TestInstallAddonsStepPins(t *testing.T) {
 	if dev.addons["hash_smart_home_agent"].Version != "1.2.3" {
 		t.Errorf("expected pin to 1.2.3, got %q", dev.addons["hash_smart_home_agent"].Version)
 	}
+}
+
+// configure-agent writes the options and, on a resumed run where the add-on is
+// already running, restarts it so the corrected config actually loads (HA reads
+// options only at container start). A first run whose add-on is still stopped
+// only writes options — start-agent starts it fresh, so no restart is needed.
+func TestConfigureAgentStepRestartsRunningAddon(t *testing.T) {
+	step := configureAgentStep(&captureReporter{})
+
+	newState := func(dev *fakeDevice) *State {
+		return &State{
+			Client:       dev,
+			Manifest:     testManifest(""),
+			AgentSlug:    "hash_smart_home_agent",
+			AgentOptions: map[string]any{"cloud_base_url": "http://192.168.100.73:8090"},
+		}
+	}
+
+	t.Run("running add-on is restarted", func(t *testing.T) {
+		dev := newFakeDevice()
+		dev.addons["hash_smart_home_agent"] = &AddonInfo{
+			Slug: "hash_smart_home_agent", Installed: true, Version: "9.9.9", State: "started",
+			Options: map[string]any{"cloud_base_url": "http://10.0.2.2:8090"},
+		}
+
+		if err := step.Act(context.Background(), newState(dev)); err != nil {
+			t.Fatalf("Act: %v", err)
+		}
+		if dev.restarts["hash_smart_home_agent"] != 1 {
+			t.Errorf("a running add-on must be restarted to apply new options, got %d restarts", dev.restarts["hash_smart_home_agent"])
+		}
+	})
+
+	t.Run("stopped add-on is not restarted", func(t *testing.T) {
+		dev := newFakeDevice()
+		dev.addons["hash_smart_home_agent"] = &AddonInfo{
+			Slug: "hash_smart_home_agent", Installed: true, Version: "9.9.9", State: "stopped",
+		}
+
+		if err := step.Act(context.Background(), newState(dev)); err != nil {
+			t.Fatalf("Act: %v", err)
+		}
+		if dev.restarts["hash_smart_home_agent"] != 0 {
+			t.Errorf("a stopped add-on must not be restarted (start-agent starts it fresh), got %d restarts", dev.restarts["hash_smart_home_agent"])
+		}
+	})
 }
 
 // The await-provision step captures the uid + claim code onto the State.

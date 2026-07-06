@@ -38,7 +38,7 @@ func BuildSteps(reporter Reporter) []Step {
 		ownerAndTokenStep(reporter),
 		addonRepositoryStep(reporter),
 		installAddonsStep(reporter),
-		configureAgentStep(),
+		configureAgentStep(reporter),
 		startAgentStep(reporter),
 		awaitProvisionStep(reporter),
 		pinReleaseStep(reporter),
@@ -314,7 +314,7 @@ func installAddonsStep(reporter Reporter) Step {
 // configureAgentStep writes the agent add-on's options (cloud URL, factory key,
 // broker settings). It is idempotent: a re-run whose desired options already
 // match is skipped.
-func configureAgentStep() Step {
+func configureAgentStep(reporter Reporter) Step {
 	return Step{
 		Name: StepConfigureAgent,
 		Check: func(ctx context.Context, st *State) (bool, error) {
@@ -334,7 +334,27 @@ func configureAgentStep() Step {
 				return err
 			}
 
-			return st.Client.SetAddonOptions(ctx, st.AgentSlug, st.AgentOptions)
+			if err := st.Client.SetAddonOptions(ctx, st.AgentSlug, st.AgentOptions); err != nil {
+				return err
+			}
+
+			// Home Assistant loads an add-on's options only at container start.
+			// On a resumed run that corrects the config (e.g. a wrong
+			// cloud_base_url / mqtt_host) the add-on is already running, so the
+			// new options would never take effect: start-agent sees it
+			// "started" and skips, and the agent keeps provisioning against the
+			// stale config. Restart it here so the corrected options load.
+			info, err := st.Client.AddonInfo(ctx, st.AgentSlug)
+			if err != nil {
+				return err
+			}
+			if info.State == "started" {
+				reporter.Info("restarting the agent to apply the updated configuration")
+
+				return st.Client.RestartAddon(ctx, st.AgentSlug)
+			}
+
+			return nil
 		},
 		Verify: func(ctx context.Context, st *State) error {
 			info, err := st.Client.AddonInfo(ctx, st.AgentSlug)

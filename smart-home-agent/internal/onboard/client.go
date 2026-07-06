@@ -664,6 +664,15 @@ func (c *Client) StartAddon(ctx context.Context, slug string) error {
 	return err
 }
 
+// RestartAddon restarts an installed add-on. Home Assistant loads an add-on's
+// options only at container start, so a config change written to an already
+// running add-on takes effect only after a restart.
+func (c *Client) RestartAddon(ctx context.Context, slug string) error {
+	_, err := c.supervisorAPI(ctx, "post", "/addons/"+slug+"/restart", nil, supervisorCallTimeout)
+
+	return err
+}
+
 // OSInfo reports the running vs latest Home Assistant OS version.
 func (c *Client) OSInfo(ctx context.Context) (VersionInfo, error) {
 	return c.versionInfo(ctx, "/os/info")

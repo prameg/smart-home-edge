@@ -131,6 +131,18 @@ If any step fails, the CLI prints which step failed and why; fix the cause and
   drives those through the `supervisor/api` WebSocket command instead, so a build
   from this repo should not hit it — if you do, you are running an older
   `smart-onboard` binary; rebuild from `cmd/smart-onboard`.
+- **`await-provision` times out with "network is unreachable" to the cloud
+  (visible in the agent add-on log).** The add-on cannot reach
+  `--cloud-base-url` / `--mqtt-host` from *inside* the gateway's network. The
+  classic cause is testing against a VM: `10.0.2.2` reaches the host only under
+  QEMU/SLIRP user-networking — **VirtualBox NAT does not expose the host at
+  `10.0.2.2`** (the guest has no route there). Point `--cloud-base-url` and
+  `--mqtt-host` at the host's real LAN IP (e.g. `http://192.168.100.73:8090`,
+  `--mqtt-host 192.168.100.73`) and make sure the cloud and broker listen on all
+  interfaces (`0.0.0.0`), not just loopback. Because HA loads add-on options
+  only at container start, `smart-onboard` restarts the already-running agent
+  when a re-run changes its config, so simply re-running with the corrected
+  flags resumes cleanly.
 - **"owner already exists" on what should be a first run.** `smart-onboard`
   creates the owner only on a genuinely fresh flash; on a device that already
   has one it logs in with the supplied credentials. Seeing "owner already

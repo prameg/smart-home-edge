@@ -66,6 +66,9 @@ type DeviceAPI interface {
 	SetAddonAutoUpdate(ctx context.Context, slug string, enabled bool) error
 	// StartAddon starts an installed add-on.
 	StartAddon(ctx context.Context, slug string) error
+	// RestartAddon restarts an installed add-on so option changes written while
+	// it was running take effect (HA loads add-on options only at start).
+	RestartAddon(ctx context.Context, slug string) error
 
 	// OSInfo / CoreInfo report the running OS / Core versions.
 	OSInfo(ctx context.Context) (VersionInfo, error)
