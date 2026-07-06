@@ -1,0 +1,42 @@
+{
+  "release_id": "2026.07-r1",
+  "populated": false,
+  "notes": "Machine-readable twin of docs/fleet-release.md. TEMPLATE: populated=false means versions are not yet pinned to a validated release. While unpopulated, smart-onboard installs the latest add-ons and SKIPS OS/Core/add-on version pinning (it warns instead of failing) so the tool still runs end-to-end on a bring-up unit. Fill in the versions from `ha os info` / `ha core info` / `ha addons` on the bring-up Pi, set populated=true, and tag the release id. The future Jetson AI-node contract (JetPack version, container image digests, model versions) will get its own section here when that phase lands.",
+  "haos": {
+    "version": ""
+  },
+  "core": {
+    "version": ""
+  },
+  "addon_repository": "https://github.com/prameg/smart-home-edge",
+  "addons": [
+    {
+      "name": "Mosquitto broker",
+      "match": "mosquitto",
+      "slug": "core_mosquitto",
+      "version": "",
+      "core": true
+    },
+    {
+      "name": "Matter Server",
+      "match": "matter_server",
+      "slug": "core_matter_server",
+      "version": "",
+      "core": true
+    },
+    {
+      "name": "Zigbee2MQTT",
+      "match": "zigbee2mqtt",
+      "version": "",
+      "repository": "https://github.com/zigbee2mqtt/hassio-zigbee2mqtt",
+      "core": false
+    },
+    {
+      "name": "Smart Home Agent",
+      "match": "smart_home_agent",
+      "version": "0.1.0",
+      "repository": "https://github.com/prameg/smart-home-edge",
+      "core": false
+    }
+  ]
+}

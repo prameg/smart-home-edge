@@ -1,0 +1,24 @@
+# Go build artifacts
+/smart-home-agent/agent
+/smart-home-agent/dist/
+*.test
+*.out
+
+# Agent local run artifacts
+/smart-home-agent/.env.local
+/smart-home-agent/.data/
+
+# Local secrets / env
+.env
+infra/.env
+
+# Broker TLS material (keep the certs/README.md)
+infra/mosquitto/certs/*.crt
+infra/mosquitto/certs/*.key
+infra/mosquitto/certs/*.csr
+infra/mosquitto/certs/*.srl
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/

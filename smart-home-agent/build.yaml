@@ -1,0 +1,7 @@
+# Base images per architecture for the add-on builder. These are the official
+# Home Assistant Alpine base images; the Dockerfile builds the Go binary in a
+# multi-stage build and copies it onto this minimal runtime.
+build_from:
+  aarch64: ghcr.io/home-assistant/aarch64-base:3.19
+  amd64: ghcr.io/home-assistant/amd64-base:3.19
+  armv7: ghcr.io/home-assistant/armv7-base:3.19

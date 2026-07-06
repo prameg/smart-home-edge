@@ -1,0 +1,153 @@
+package onboard
+
+import (
+	"context"
+	"time"
+
+	"github.com/smart-home/edge/agent/fleet"
+)
+
+// DeviceAPI is everything the onboarding steps do to a gateway, expressed as one
+// narrow seam so the steps are testable against a fake and the real HTTP client
+// (client.go) is the only place that knows Home Assistant's wire formats.
+//
+// Authentication is stateful: the connectivity/onboarding calls run before any
+// token exists; once the owner+token step obtains a token it calls SetToken, and
+// every subsequent Supervisor call authenticates with that stored token. Keeping
+// the token on the client (rather than threading it through every method) keeps
+// the interface and the step code readable.
+type DeviceAPI interface {
+	// WaitForCore blocks until Home Assistant Core's HTTP API answers or timeout
+	// elapses (first HAOS boot downloads Core, which can take minutes).
+	WaitForCore(ctx context.Context, timeout time.Duration) error
+
+	// OnboardingStatus reports where the device is in the HA onboarding wizard.
+	OnboardingStatus(ctx context.Context) (OnboardingStatus, error)
+	// CreateOwner creates the owner account via the onboarding API and returns
+	// an authorization code to exchange for tokens.
+	CreateOwner(ctx context.Context, o OwnerConfig) (authCode string, err error)
+	// Login runs the username/password auth flow (the re-run path when the owner
+	// already exists) and returns an authorization code.
+	Login(ctx context.Context, username, password string) (authCode string, err error)
+	// ExchangeCode swaps an authorization code for a short-lived access token.
+	ExchangeCode(ctx context.Context, authCode string) (accessToken string, err error)
+	// CreateLongLivedToken upgrades a short-lived access token into a long-lived
+	// one that outlasts a slow add-on install / Core download.
+	CreateLongLivedToken(ctx context.Context, accessToken, clientName string) (token string, err error)
+	// FinishOnboarding best-effort completes the remaining wizard steps
+	// (core_config/analytics/integration) so the frontend does not reappear at
+	// the wizard; failures are non-fatal.
+	FinishOnboarding(ctx context.Context) error
+	// SetToken stores the token used to authenticate all later Supervisor calls.
+	SetToken(token string)
+	// Token returns the stored token (empty before authentication).
+	Token() string
+
+	// StoreRepositories lists the add-on store repository URLs already
+	// registered.
+	StoreRepositories(ctx context.Context) ([]string, error)
+	// AddStoreRepository registers an add-on store repository by URL.
+	AddStoreRepository(ctx context.Context, url string) error
+	// ResolveAddonSlug maps a manifest add-on to its full Supervisor slug (an
+	// exact configured slug, or by matching the store when it carries a
+	// repo-hash prefix). Returns found=false when the add-on is not yet in the
+	// store (e.g. its repository has not finished loading).
+	ResolveAddonSlug(ctx context.Context, a fleet.Addon) (slug string, found bool, err error)
+	// AddonInfo returns an add-on's install state and versions.
+	AddonInfo(ctx context.Context, slug string) (AddonInfo, error)
+	// InstallAddon installs an add-on (latest available version).
+	InstallAddon(ctx context.Context, slug string) error
+	// UpdateAddon moves an installed add-on to a specific version (used to pin).
+	UpdateAddon(ctx context.Context, slug, version string) error
+	// SetAddonOptions writes an add-on's user options (the add-on's config.yaml
+	// schema keys).
+	SetAddonOptions(ctx context.Context, slug string, options map[string]any) error
+	// SetAddonAutoUpdate toggles an add-on's auto-update flag (pinned = off).
+	SetAddonAutoUpdate(ctx context.Context, slug string, enabled bool) error
+	// StartAddon starts an installed add-on.
+	StartAddon(ctx context.Context, slug string) error
+
+	// OSInfo / CoreInfo report the running OS / Core versions.
+	OSInfo(ctx context.Context) (VersionInfo, error)
+	CoreInfo(ctx context.Context) (VersionInfo, error)
+	// UpdateOS / UpdateCore converge OS / Core to a pinned version.
+	UpdateOS(ctx context.Context, version string) error
+	UpdateCore(ctx context.Context, version string) error
+
+	// ClaimInfo reads the agent's provisioned identity and short claim code by
+	// inspecting the agent add-on (its logs, falling back to the HA persistent
+	// notification). found is false until the agent has provisioned.
+	ClaimInfo(ctx context.Context, agentSlug string) (ClaimInfo, error)
+}
+
+// OnboardingStatus is where a device sits in the HA onboarding wizard.
+type OnboardingStatus struct {
+	// UserDone is true once the owner account exists.
+	UserDone bool
+	// AllDone is true once the whole wizard is complete (the onboarding
+	// endpoints are gone).
+	AllDone bool
+}
+
+// AddonInfo is an add-on's install state as Supervisor reports it.
+type AddonInfo struct {
+	Slug      string
+	Installed bool
+	// Version is the installed version ("" when not installed).
+	Version string
+	// State is "started" / "stopped" (empty when not installed).
+	State string
+	// AutoUpdate is the current auto-update flag.
+	AutoUpdate bool
+	// Options is the add-on's current user options, used to skip a redundant
+	// re-write when the desired options already match.
+	Options map[string]any
+}
+
+// VersionInfo is a running-vs-latest version pair for OS / Core.
+type VersionInfo struct {
+	Version string
+	Latest  string
+}
+
+// ClaimInfo is what the agent surfaces once it has provisioned: its cloud uid,
+// whether it is already claimed, and (while unclaimed) the short claim code the
+// installer reads off to bind the gateway to a home.
+type ClaimInfo struct {
+	UID       string
+	Claimed   bool
+	ClaimCode string
+}
+
+// OwnerConfig is the HA owner account the CLI creates on a fresh device.
+type OwnerConfig struct {
+	Name     string
+	Username string
+	Password string
+	Language string
+}
+
+// Timeouts bounds the two waits that can legitimately take minutes on real
+// hardware: Core coming up after a fresh flash, and the agent provisioning
+// against the cloud after it starts.
+type Timeouts struct {
+	WaitCore      time.Duration
+	WaitProvision time.Duration
+}
+
+// State is the shared, mutating context threaded through every step: the fixed
+// inputs (client, manifest, owner, agent options, timeouts) plus values
+// accumulated as the run progresses (token, resolved agent slug, provisioned
+// identity + claim code). Steps read earlier steps' output from here.
+type State struct {
+	Client       DeviceAPI
+	Manifest     *fleet.Manifest
+	Owner        OwnerConfig
+	AgentOptions map[string]any
+	Timeouts     Timeouts
+
+	// Accumulated during the run.
+	AccessToken string
+	AgentSlug   string
+	Claim       ClaimInfo
+}

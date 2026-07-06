@@ -1,0 +1,77 @@
+# Home Assistant add-on manifest for the smart-home agent.
+# Docs: https://developers.home-assistant.io/docs/add-ons/configuration
+name: Smart Home Agent
+version: "0.1.0"
+slug: smart_home_agent
+description: >-
+  Bridges this Home Assistant instance to the smart-home cloud: self-provisions,
+  connects to the cloud MQTT broker over TLS with a persistent session, and
+  round-trips device state, commands and desired-shadow per the platform contract.
+url: https://github.com/your-org/smart-home-edge/tree/main/smart-home-agent
+
+# Multi-arch: aarch64 is the Pi 5 target; the rest cover CI / other boards.
+arch:
+  - aarch64
+  - amd64
+  - armv7
+
+# The Supervisor injects SUPERVISOR_TOKEN and lets us reach Core at
+# http://supervisor/core/api and ws://supervisor/core/websocket.
+homeassistant_api: true
+
+# The agent only makes OUTBOUND connections (cloud HTTP + broker); the default
+# bridge network already gives it DNS + egress, so no host networking and no
+# exposed ports are needed.
+host_network: false
+
+# Ingress renders the agent's own web server as an authenticated HA sidebar
+# panel. Supervisor reaches the container on ingress_port over the internal
+# bridge network and proxies requests that are already HA-authenticated (the
+# panel is only visible to logged-in users), so no host_network, no public
+# `ports:`, and no auth of our own are needed. panel_admin defaults to true, so
+# the panel is shown to admins only — the right audience for a gateway/fleet
+# tool. The Go web server must bind this same port (see config.WebUIPort).
+ingress: true
+ingress_port: 8099
+panel_title: Smart Home
+panel_icon: mdi:transit-connection-variant
+
+startup: application
+boot: auto
+
+# The HA base images ship s6-overlay v3 as their init. Supervisor's own init
+# must be disabled or the add-on won't start (HA add-on docs: "Starting in V3 of
+# S6 setting this to false is required or the app won't start"). The add-on must
+# still launch via run.sh (#!/usr/bin/with-contenv) so SUPERVISOR_TOKEN is set.
+init: false
+
+# Private, always-mounted persistent volume (/data) holds provisioned
+# credentials + applied-version state. `addon_config` is a separate, user-facing
+# folder mounted at /config (host: /addon_configs/local_smart_home_agent/) where
+# a tester drops the optional entity-map override; AGENT_CONFIG_DIR points the
+# agent at it (see environment below).
+map:
+  - addon_config:rw
+
+environment:
+  AGENT_CONFIG_DIR: /config
+
+options:
+  cloud_base_url: "http://10.0.2.2:8090"
+  factory_key: "dev-factory-secret-track2"
+  serial: ""
+  mqtt_host: "10.0.2.2"
+  mqtt_port: 1883
+  mqtt_tls: false
+  mqtt_tls_insecure: true
+  log_level: "info"
+
+schema:
+  cloud_base_url: "url"
+  factory_key: "password"
+  serial: "str?"
+  mqtt_host: "str"
+  mqtt_port: "port"
+  mqtt_tls: "bool"
+  mqtt_tls_insecure: "bool"
+  log_level: "list(debug|info|warning|error)"

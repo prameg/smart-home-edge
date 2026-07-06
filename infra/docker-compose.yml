@@ -1,0 +1,39 @@
+# Cloud broker node: Mosquitto + mosquitto-go-auth on a small external host
+# (Hetzner/Fly.io/etc). This is the MQTT broker field gateways connect to and
+# that the cloud's `mqtt:subscribe` daemon reads from.
+#
+# go-auth calls the Laravel cloud's broker-auth callbacks directly over TLS. The
+# broker shared secret is carried in the URL PATH (go-auth can't send a custom
+# header), so the callback URIs in mosquitto.conf embed ${SMART_HOME_BROKER_AUTH_SECRET}.
+#
+# Why not Laravel Cloud for the broker itself? It's a long-running TCP/TLS
+# service, not an HTTP app — only the HTTP broker-auth callbacks live on the cloud.
+services:
+  mosquitto:
+    image: iegomez/mosquitto-go-auth:latest
+    restart: unless-stopped
+    ports:
+      - "8883:8883" # TLS listener for gateways (MQTT 3.1.1)
+      - "1883:1883" # plain listener — firewall to localhost in prod
+    environment:
+      # Consumed by the entrypoint below to render mosquitto.conf with the
+      # cloud host + secret-in-path callback URIs.
+      CLOUD_HOST: ${CLOUD_HOST}
+      CLOUD_PORT: ${CLOUD_PORT:-443}
+      SMART_HOME_BROKER_AUTH_SECRET: ${SMART_HOME_BROKER_AUTH_SECRET}
+    volumes:
+      - ./mosquitto/mosquitto.conf.template:/mosquitto/config/mosquitto.conf.template:ro
+      - ./mosquitto/certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+    # Render the config from the template (envsubst) then exec mosquitto. This
+    # keeps the secret + host out of the committed config file.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        apk add --no-cache gettext >/dev/null 2>&1 || true;
+        envsubst < /mosquitto/config/mosquitto.conf.template > /mosquitto/config/mosquitto.conf;
+        exec mosquitto -c /mosquitto/config/mosquitto.conf
+
+volumes:
+  mosquitto-data:

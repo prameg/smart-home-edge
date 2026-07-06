@@ -1,0 +1,10 @@
+# Optional: local Mosquitto via Docker (if you have it). Otherwise run it with
+# Homebrew — see this folder's README. Plain, anonymous, no TLS. Local use only.
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.local.conf:/mosquitto/config/mosquitto.conf:ro

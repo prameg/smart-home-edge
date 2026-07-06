@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Smart Home Agent</title>
+    <style>
+      :root {
+        --bg: #f4f5f7;
+        --card: #ffffff;
+        --border: #e3e6ea;
+        --fg: #1c1e21;
+        --muted: #6a7076;
+        --accent: #2f6feb;
+        --ok: #1f9d55;
+        --warn: #c47f17;
+        --bad: #d64545;
+        --radius: 12px;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #14161a;
+          --card: #1d2025;
+          --border: #2c3038;
+          --fg: #e7e9ec;
+          --muted: #9aa0a8;
+          --accent: #5b8def;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+      .wrap {
+        max-width: 880px;
+        margin: 0 auto;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 18px;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0;
+      }
+      h2 {
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        margin: 0 0 12px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px;
+        margin-bottom: 16px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 14px 24px;
+      }
+      .field .label {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .field .value {
+        font-weight: 600;
+        word-break: break-all;
+      }
+      mono,
+      .mono {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .badge.ok {
+        background: color-mix(in srgb, var(--ok) 16%, transparent);
+        color: var(--ok);
+      }
+      .badge.warn {
+        background: color-mix(in srgb, var(--warn) 16%, transparent);
+        color: var(--warn);
+      }
+      .badge.bad {
+        background: color-mix(in srgb, var(--bad) 16%, transparent);
+        color: var(--bad);
+      }
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+      .claim-code {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: 0.1em;
+        margin: 4px 0 12px;
+      }
+      button {
+        font: inherit;
+        font-weight: 600;
+        border: 1px solid var(--border);
+        background: var(--card);
+        color: var(--fg);
+        padding: 8px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button.primary {
+        background: var(--accent);
+        border-color: var(--accent);
+        color: #fff;
+      }
+      button.danger:hover {
+        border-color: var(--bad);
+        color: var(--bad);
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .action-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-width: 260px;
+      }
+      .action-item .hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 12px 0;
+      }
+      #toasts {
+        position: fixed;
+        top: 16px;
+        right: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        z-index: 10;
+      }
+      .toast {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-left-width: 4px;
+        border-radius: 8px;
+        padding: 10px 14px;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+        max-width: 340px;
+      }
+      .toast.ok {
+        border-left-color: var(--ok);
+      }
+      .toast.bad {
+        border-left-color: var(--bad);
+      }
+      .hidden {
+        display: none !important;
+      }
+      .row-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <h1>Smart Home Agent</h1>
+        <span id="conn" class="badge warn"><span class="dot"></span> Connecting…</span>
+      </header>
+
+      <section class="card" id="claim-card" hidden>
+        <h2>Claim this gateway</h2>
+        <p class="hint" style="margin-top: 0; color: var(--muted)">
+          Open the Smart Home app and enter this code to bind the gateway to a home.
+        </p>
+        <div class="claim-code" id="claim-code">—</div>
+        <div class="actions">
+          <button id="copy-code">Copy code</button>
+          <button id="reissue-code">Reissue code</button>
+        </div>
+        <div class="hint" id="claim-expiry" style="color: var(--muted); margin-top: 8px"></div>
+      </section>
+
+      <section class="card">
+        <h2>Status</h2>
+        <div class="grid" id="status-grid">
+          <div class="empty">Loading…</div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Actions</h2>
+        <div class="actions">
+          <div class="action-item">
+            <button id="act-inventory">Republish inventory</button>
+            <span class="hint">Re-send the HA entity inventory to the cloud.</span>
+          </div>
+          <div class="action-item">
+            <button id="act-reconcile">Reconcile state</button>
+            <span class="hint">Re-report every mapped device's current HA state.</span>
+          </div>
+          <div class="action-item">
+            <button id="act-reprovision" class="danger">Re-provision</button>
+            <span class="hint">Rotates the MQTT password and reconnects. Use only if the broker is rejecting credentials.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Mapped devices</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Device UID</th>
+              <th>Entity</th>
+              <th>State</th>
+              <th>Last changed</th>
+            </tr>
+          </thead>
+          <tbody id="devices-body">
+            <tr>
+              <td colspan="4" class="empty">Loading…</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <div id="toasts"></div>
+
+    <script>
+      const $ = (id) => document.getElementById(id);
+
+      function toast(message, ok = true) {
+        const el = document.createElement("div");
+        el.className = "toast " + (ok ? "ok" : "bad");
+        el.textContent = message;
+        $("toasts").appendChild(el);
+        setTimeout(() => el.remove(), 5000);
+      }
+
+      function field(label, value, mono = false) {
+        const v = value === "" || value === undefined || value === null ? "—" : value;
+        return (
+          '<div class="field"><div class="label">' +
+          label +
+          '</div><div class="value' +
+          (mono ? " mono" : "") +
+          '">' +
+          v +
+          "</div></div>"
+        );
+      }
+
+      function esc(s) {
+        return String(s).replace(
+          /[&<>"']/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        );
+      }
+
+      let currentCode = "";
+
+      async function refreshStatus() {
+        try {
+          const res = await fetch("api/status", { headers: { Accept: "application/json" } });
+          if (!res.ok) throw new Error("status " + res.status);
+          const s = await res.json();
+          render(s);
+          setConn(true);
+        } catch (err) {
+          setConn(false);
+        }
+      }
+
+      function setConn(online) {
+        const el = $("conn");
+        if (online) {
+          el.className = "badge ok";
+          el.innerHTML = '<span class="dot"></span> Panel online';
+        } else {
+          el.className = "badge bad";
+          el.innerHTML = '<span class="dot"></span> Agent unreachable';
+        }
+      }
+
+      function render(s) {
+        const claimBadge = s.claimed
+          ? '<span class="badge ok"><span class="dot"></span> Claimed</span>'
+          : '<span class="badge warn"><span class="dot"></span> Unclaimed</span>';
+        const brokerBadge = s.broker_connected
+          ? '<span class="badge ok"><span class="dot"></span> Connected</span>'
+          : '<span class="badge bad"><span class="dot"></span> Disconnected</span>';
+
+        $("status-grid").innerHTML =
+          field("Claim status", claimBadge) +
+          field("Broker", brokerBadge) +
+          field("Gateway UID", esc(s.uid), true) +
+          field("Serial", esc(s.serial), true) +
+          field("Mapped devices", s.device_count) +
+          field("Config version", s.config_version) +
+          field("Agent version", esc(s.agent_version), true) +
+          field("HA version", esc(s.ha_version), true) +
+          field("Cloud", esc(s.cloud_base_url), true) +
+          field("Broker target", esc(s.mqtt_host + ":" + s.mqtt_port + (s.mqtt_tls ? " (TLS)" : "")), true);
+
+        const claimCard = $("claim-card");
+        if (!s.claimed && s.claim_code) {
+          currentCode = s.claim_code;
+          $("claim-code").textContent = s.claim_code;
+          $("claim-expiry").textContent = s.claim_code_expires_at
+            ? "Expires: " + new Date(s.claim_code_expires_at).toLocaleString()
+            : "";
+          claimCard.hidden = false;
+        } else {
+          claimCard.hidden = true;
+        }
+      }
+
+      async function refreshDevices() {
+        const body = $("devices-body");
+        try {
+          const res = await fetch("api/devices", { headers: { Accept: "application/json" } });
+          if (!res.ok) throw new Error("status " + res.status);
+          const rows = await res.json();
+          if (!rows || rows.length === 0) {
+            body.innerHTML = '<tr><td colspan="4" class="empty">No mapped devices yet.</td></tr>';
+            return;
+          }
+          body.innerHTML = rows
+            .map((r) => {
+              const state = r.error ? '<span class="badge bad">' + esc(r.error) + "</span>" : esc(r.state || "—");
+              const changed = r.last_changed ? new Date(r.last_changed).toLocaleString() : "—";
+              return (
+                "<tr><td class='mono'>" +
+                esc(r.device_uid) +
+                "</td><td class='mono'>" +
+                esc(r.entity_id) +
+                "</td><td>" +
+                state +
+                "</td><td>" +
+                changed +
+                "</td></tr>"
+              );
+            })
+            .join("");
+        } catch (err) {
+          body.innerHTML = '<tr><td colspan="4" class="empty">Could not load devices.</td></tr>';
+        }
+      }
+
+      async function postAction(path, btn) {
+        if (btn) btn.disabled = true;
+        try {
+          const res = await fetch("api/actions/" + path, { method: "POST" });
+          const data = await res.json();
+          toast(data.message || (data.ok ? "Done." : "Failed."), data.ok);
+        } catch (err) {
+          toast("Request failed: " + err.message, false);
+        } finally {
+          if (btn) btn.disabled = false;
+          refreshStatus();
+          refreshDevices();
+        }
+      }
+
+      $("copy-code").addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(currentCode);
+          toast("Claim code copied.");
+        } catch {
+          toast("Copy failed — select it manually.", false);
+        }
+      });
+      $("reissue-code").addEventListener("click", (e) => postAction("claim-code", e.target));
+      $("act-inventory").addEventListener("click", (e) => postAction("inventory", e.target));
+      $("act-reconcile").addEventListener("click", (e) => postAction("reconcile", e.target));
+      $("act-reprovision").addEventListener("click", (e) => {
+        if (confirm("Re-provision now? This rotates the MQTT password and reconnects the broker.")) {
+          postAction("reprovision", e.target);
+        }
+      });
+
+      function tick() {
+        refreshStatus();
+        refreshDevices();
+      }
+      tick();
+      setInterval(tick, 5000);
+    </script>
+  </body>
+</html>

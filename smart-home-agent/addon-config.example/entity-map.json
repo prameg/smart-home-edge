@@ -1,0 +1,3 @@
+[
+  { "device_uid": "spike-light-1", "entity_id": "light.bed_light" }
+]
