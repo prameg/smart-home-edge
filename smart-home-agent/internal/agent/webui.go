@@ -124,6 +124,18 @@ func (a *Agent) RepublishInventory(ctx context.Context) error {
 	return nil
 }
 
+// CreateTestLight provisions a controllable template light (light.bed_light) in
+// HA for local/VM testing where there is no real hardware — the cloud registers
+// it on the next inventory publish. Delegates to the HA client (idempotent); the
+// user republishes inventory afterwards to sync it.
+func (a *Agent) CreateTestLight(ctx context.Context) error {
+	if a.ha == nil {
+		return fmt.Errorf("home assistant client unavailable")
+	}
+
+	return a.ha.CreateTestLight(ctx)
+}
+
 // ReconcileNow re-reports HA's current state for every mapped device. It runs
 // off the request goroutine (one HA GET per device) so the HTTP response is not
 // held open for the whole sweep.

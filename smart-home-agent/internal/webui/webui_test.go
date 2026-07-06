@@ -20,10 +20,12 @@ type fakeBackend struct {
 
 	claimErr     error
 	inventoryErr error
+	testLightErr error
 	reprovErr    error
 
 	claimCalls     int
 	inventoryCalls int
+	testLightCalls int
 	reconcileCalls int
 	reprovCalls    int
 }
@@ -41,6 +43,12 @@ func (f *fakeBackend) RepublishInventory(context.Context) error {
 	f.inventoryCalls++
 
 	return f.inventoryErr
+}
+
+func (f *fakeBackend) CreateTestLight(context.Context) error {
+	f.testLightCalls++
+
+	return f.testLightErr
 }
 
 func (f *fakeBackend) ReconcileNow() { f.reconcileCalls++ }
@@ -139,6 +147,7 @@ func TestActionRoutesDispatch(t *testing.T) {
 	}{
 		{"claim-code", func() int { return fake.claimCalls }},
 		{"inventory", func() int { return fake.inventoryCalls }},
+		{"test-light", func() int { return fake.testLightCalls }},
 		{"reconcile", func() int { return fake.reconcileCalls }},
 		{"reprovision", func() int { return fake.reprovCalls }},
 	}

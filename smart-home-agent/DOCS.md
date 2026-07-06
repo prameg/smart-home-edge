@@ -49,6 +49,7 @@ the MQTT password or provision token).
 | --------------------- | ------------------------------------------------------------------------------------------------ |
 | Reissue claim code    | Mints and resurfaces a fresh claim code (unclaimed only; refused once claimed).                  |
 | Republish inventory   | Forces a fresh HA-entity inventory publish to the cloud (resets the hash gate first).            |
+| Create test light     | Provisions a controllable `light.bed_light` (backed by an `input_boolean`) for VMs/dev with no real hardware. Idempotent — republish inventory afterwards to register it. |
 | Reconcile state       | Re-reports HA's current state for every mapped device (self-heals a stale cloud `reported_state`). |
 | Re-provision          | **Side effect:** recovers credentials, **rotating the MQTT password**, then reconnects the broker. Use only when the broker is rejecting credentials — it is cool-down guarded. |
 
@@ -106,8 +107,9 @@ editor* add-ons):
 
 Restart the add-on after editing (it's read once at startup).
 
-For a VM with no real hardware, create a test `light.*` entity first — see
-[`../docs/local-testing.md`](../docs/local-testing.md#create-a-test-light-track-23).
+For a VM with no real hardware, create a test `light.*` entity first with the
+**Create test light** action in the Smart Home panel (see
+[`../docs/local-testing.md`](../docs/local-testing.md#create-a-test-light-track-23)).
 
 ## Claiming
 

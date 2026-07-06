@@ -107,6 +107,124 @@ func (c *Client) CallService(ctx context.Context, domain, service string, data m
 	return nil
 }
 
+// Test-light entities. A backing input_boolean stores the on/off state (the
+// cloud ignores that domain), wrapped in a template light so an actual light.*
+// entity — which the cloud does register — exists without any hardware.
+const (
+	testToggleObjectID = "bed_lights"
+	testLightEntity    = "light.bed_light"
+)
+
+// CreateTestLight provisions a controllable template light (light.bed_light)
+// for local/VM testing where there is no real hardware, so the cloud has a
+// device to register and control after the next inventory publish. It is
+// idempotent: entities that already exist are left untouched. Runs entirely over
+// the Supervisor-proxied HA APIs (WS registry + REST config-flow) — no external
+// script or extra token needed inside the add-on.
+func (c *Client) CreateTestLight(ctx context.Context) error {
+	if err := c.ensureTestToggle(ctx); err != nil {
+		return err
+	}
+
+	return c.ensureTestTemplateLight(ctx)
+}
+
+// ensureTestToggle creates the input_boolean that stores the light's on/off
+// state (HA slugifies the name into input_boolean.bed_lights).
+func (c *Client) ensureTestToggle(ctx context.Context) error {
+	if _, err := c.State(ctx, "input_boolean."+testToggleObjectID); err == nil {
+		return nil // already exists
+	}
+
+	if _, err := c.wsCommand(ctx, "input_boolean/create", map[string]any{
+		"name": "Bed Lights",
+		"icon": "mdi:flashlight",
+	}); err != nil {
+		return fmt.Errorf("ha: create test toggle: %w", err)
+	}
+
+	return nil
+}
+
+// ensureTestTemplateLight drives the template integration's config-flow to build
+// light.bed_light backed by the input_boolean above.
+func (c *Client) ensureTestTemplateLight(ctx context.Context) error {
+	if _, err := c.State(ctx, testLightEntity); err == nil {
+		return nil // already exists
+	}
+
+	flow, err := c.restPost(ctx, "/config/config_entries/flow", map[string]any{"handler": "template"})
+	if err != nil {
+		return fmt.Errorf("ha: start template flow: %w", err)
+	}
+
+	flowID, ok := flow["flow_id"].(string)
+	if !ok || flowID == "" {
+		return fmt.Errorf("ha: template flow returned no flow_id")
+	}
+
+	if _, err := c.restPost(ctx, "/config/config_entries/flow/"+flowID, map[string]any{"next_step_id": "light"}); err != nil {
+		return fmt.Errorf("ha: select template light step: %w", err)
+	}
+
+	toggle := "input_boolean." + testToggleObjectID
+	result, err := c.restPost(ctx, "/config/config_entries/flow/"+flowID, map[string]any{
+		"name":  "Bed Light",
+		"state": fmt.Sprintf("{{ is_state('%s', 'on') }}", toggle),
+		"turn_on": map[string]any{
+			"action": "input_boolean.turn_on",
+			"target": map[string]any{"entity_id": toggle},
+		},
+		"turn_off": map[string]any{
+			"action": "input_boolean.turn_off",
+			"target": map[string]any{"entity_id": toggle},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("ha: finish template light flow: %w", err)
+	}
+
+	if result["type"] != "create_entry" {
+		return fmt.Errorf("ha: template light flow did not complete: %v", result["type"])
+	}
+
+	return nil
+}
+
+// restPost sends a JSON POST to an HA REST path and decodes the JSON object
+// response. Used for the multi-step config-entries flow that has no WS command.
+func (c *Client) restPost(ctx context.Context, path string, data map[string]any) (map[string]any, error) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("ha: encode %s: %w", path, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.HARestBaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("ha: build %s: %w", path, err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ha: %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("ha: %s returned status %d", path, resp.StatusCode)
+	}
+
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("ha: decode %s: %w", path, err)
+	}
+
+	return out, nil
+}
+
 // CreatePersistentNotification posts (or updates, by stable notificationID) a
 // notification in the HA UI — the agent uses it to show the claim code so a
 // user never has to read add-on logs. Best-effort: a failure is logged at debug
@@ -178,17 +296,17 @@ func (c *Client) State(ctx context.Context, entityID string) (StateChange, error
 // (device id/name, device_class, unit_of_measurement) is HA's exact registry
 // keys, best-effort — omitted when HA does not provide them.
 func (c *Client) EntityInventory(ctx context.Context) ([]contract.InventoryEntity, error) {
-	areasRaw, err := c.wsResult(ctx, "config/area_registry/list")
+	areasRaw, err := c.wsCommand(ctx, "config/area_registry/list", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	devicesRaw, err := c.wsResult(ctx, "config/device_registry/list")
+	devicesRaw, err := c.wsCommand(ctx, "config/device_registry/list", nil)
 	if err != nil {
 		return nil, err
 	}
 
-	entitiesRaw, err := c.wsResult(ctx, "config/entity_registry/list")
+	entitiesRaw, err := c.wsCommand(ctx, "config/entity_registry/list", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -403,9 +521,10 @@ func (c *Client) streamRegistryOnce(ctx context.Context, out chan<- struct{}) er
 	}
 }
 
-// wsResult opens a one-shot WS session, sends a single command, and returns its
-// result payload. Used for registry snapshots (area/entity lists).
-func (c *Client) wsResult(ctx context.Context, msgType string) (json.RawMessage, error) {
+// wsCommand opens a one-shot WS session, sends a single command (msgType plus
+// any extra fields), and returns its result payload. Used for registry snapshots
+// (area/entity lists) and one-off registry mutations (creating a helper entity).
+func (c *Client) wsCommand(ctx context.Context, msgType string, extra map[string]any) (json.RawMessage, error) {
 	if c.cfg.SupervisorToken == "" {
 		return nil, fmt.Errorf("missing SUPERVISOR_TOKEN (is homeassistant_api: true set on the add-on?)")
 	}
@@ -429,7 +548,12 @@ func (c *Client) wsResult(ctx context.Context, msgType string) (json.RawMessage,
 	}
 
 	const id = 1
-	if err := conn.WriteJSON(map[string]any{"id": id, "type": msgType}); err != nil {
+	msg := map[string]any{"id": id, "type": msgType}
+	for k, v := range extra {
+		msg[k] = v
+	}
+
+	if err := conn.WriteJSON(msg); err != nil {
 		return nil, fmt.Errorf("send %s: %w", msgType, err)
 	}
 

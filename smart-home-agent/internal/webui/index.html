@@ -256,6 +256,13 @@
             <span class="hint">Re-report every mapped device's current HA state.</span>
           </div>
           <div class="action-item">
+            <button id="act-test-light">Create test light</button>
+            <span class="hint"
+              >Add a controllable <span class="mono">light.bed_light</span> for testing (no hardware needed), then republish
+              inventory.</span
+            >
+          </div>
+          <div class="action-item">
             <button id="act-reprovision" class="danger">Re-provision</button>
             <span class="hint">Rotates the MQTT password and reconnects. Use only if the broker is rejecting credentials.</span>
           </div>
@@ -431,6 +438,7 @@
       $("reissue-code").addEventListener("click", (e) => postAction("claim-code", e.target));
       $("act-inventory").addEventListener("click", (e) => postAction("inventory", e.target));
       $("act-reconcile").addEventListener("click", (e) => postAction("reconcile", e.target));
+      $("act-test-light").addEventListener("click", (e) => postAction("test-light", e.target));
       $("act-reprovision").addEventListener("click", (e) => {
         if (confirm("Re-provision now? This rotates the MQTT password and reconnects the broker.")) {
           postAction("reprovision", e.target);

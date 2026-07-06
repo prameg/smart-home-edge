@@ -68,6 +68,9 @@ type Backend interface {
 	ReissueClaimCode(ctx context.Context) error
 	// RepublishInventory forces a fresh inventory publish to the cloud.
 	RepublishInventory(ctx context.Context) error
+	// CreateTestLight provisions a controllable test light (light.bed_light) in
+	// HA for local/VM testing where there is no real hardware. Idempotent.
+	CreateTestLight(ctx context.Context) error
 	// ReconcileNow re-reports HA's current state for every mapped device.
 	ReconcileNow()
 	// Reprovision recovers credentials (rotating the MQTT password) and
@@ -128,6 +131,7 @@ func (s *server) routes() http.Handler {
 	mux.HandleFunc("GET /api/devices", s.handleDevices)
 	mux.HandleFunc("POST /api/actions/claim-code", s.handleClaimCode)
 	mux.HandleFunc("POST /api/actions/inventory", s.handleInventory)
+	mux.HandleFunc("POST /api/actions/test-light", s.handleTestLight)
 	mux.HandleFunc("POST /api/actions/reconcile", s.handleReconcile)
 	mux.HandleFunc("POST /api/actions/reprovision", s.handleReprovision)
 
@@ -164,6 +168,12 @@ func (s *server) handleClaimCode(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleInventory(w http.ResponseWriter, r *http.Request) {
 	s.runAction(w, "Inventory republished to the cloud.", func() error {
 		return s.backend.RepublishInventory(r.Context())
+	})
+}
+
+func (s *server) handleTestLight(w http.ResponseWriter, r *http.Request) {
+	s.runAction(w, "Test light ready (light.bed_light). Republish inventory to register it with the cloud.", func() error {
+		return s.backend.CreateTestLight(r.Context())
 	})
 }
 

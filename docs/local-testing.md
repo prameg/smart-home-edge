@@ -56,28 +56,20 @@ for allow-listed domains (see [`../docs/mqtt-contract.md`](../docs/mqtt-contract
 — `light`, `switch`, …). Wrapping a toggle in a **template light** gives you a
 `light.*` entity without physical hardware.
 
-### Option A — setup script (recommended)
+### Option A — Smart Home panel button (recommended)
 
-From `smart-home-agent/` (uses the same `SUPERVISOR_TOKEN` as `.env.local`):
+The agent creates the test light itself over the Supervisor-proxied HA APIs, so
+there is no separate script or token to wire up. In the agent's web UI (**Smart
+Home** sidebar panel on Track 3, or `http://localhost:8099` for the local agent
+on Track 2) → **Actions** → **Create test light**.
 
-```bash
-./scripts/setup-test-light.sh
-```
+This creates `input_boolean.bed_lights` and the `light.bed_light` template light
+(idempotent — running it again is a no-op). Then click **Republish inventory**
+in the same panel so the cloud registers the device.
 
-This creates `input_boolean.bed_lights`, `light.bed_light`, and assigns the
-light to the **Bedroom** area (override with `HA_AREA=Kitchen
-./scripts/setup-test-light.sh`).
-
-Then **republish inventory** so the cloud registers the device:
-
-- **Add-on (Track 3):** Smart Home sidebar panel → **Republish inventory**, or
-  `ha addons restart local_smart_home_agent`
-- **Local agent (Track 2):** restart `./scripts/run-local.sh`, or call the agent
-  web UI action at `http://localhost:8099` → Republish inventory
-
-Refresh the cloud home **Devices** page — **Bed Light** should appear under
-**Bedroom** with on/off controls. The internal toggle (`input_boolean.bed_lights`)
- stays in HA only; hide it from dashboards if you like.
+Refresh the cloud home **Devices** page — **Bed Light** should appear with on/off
+controls. The internal toggle (`input_boolean.bed_lights`) stays in HA only; hide
+it from dashboards if you like.
 
 ### Option B — Home Assistant UI
 
