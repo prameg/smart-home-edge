@@ -5,6 +5,11 @@ provision itself and surface a claim code, with the least manual touch and the
 most maintainability. This was the least-proven piece of Phase 2; it is now
 **decided** and implemented as the `smart-onboard` CLI.
 
+> **Just need to onboard a unit against our live cloud?** Use the concrete,
+> copy-paste team runbook: [`production-onboarding.md`](production-onboarding.md)
+> (`smart.prameg.net` + `mqtt.prameg.net`). This doc is the decision + generic
+> reference behind it.
+
 ## What "onboarded" means
 
 A gateway is field-ready when, from first boot, it can:
