@@ -23,7 +23,11 @@ services:
       SMART_HOME_BROKER_AUTH_SECRET: ${SMART_HOME_BROKER_AUTH_SECRET}
     volumes:
       - ./mosquitto/mosquitto.conf.template:/mosquitto/config/mosquitto.conf.template:ro
-      - ./mosquitto/certs:/mosquitto/certs:ro
+      # Stable host dir kept in sync with the Let's Encrypt cert by the host
+      # renewal hook (see infra/README.md). NOT Forge's numbered
+      # /etc/nginx/ssl/<domain>/<id> path, which changes on every renewal and
+      # would move the mount out from under the container.
+      - /opt/mosquitto/certs:/mosquitto/certs:ro
       - mosquitto-data:/mosquitto/data
     # Render the config from the template (envsubst) then exec mosquitto. This
     # keeps the secret + host out of the committed config file.

@@ -84,7 +84,9 @@ hand-maintain a map:
    `fan`, `sensor`, `binary_sensor`, `media_player`) and pushes the authoritative
    `device_uid ↔ entity_id` map back down on the retained `config` topic.
 3. The agent applies that map. An entity that disappears is flagged (not
-   deleted) and drops out of the map until it returns.
+   deleted) and drops out of the map until it returns. Entities the user
+   disables or hides in HA are excluded from the inventory too, so they are
+   treated exactly like a disappeared entity (flagged, not deleted).
 
 So the authoritative map is **cloud-owned** and self-heals — HA owns which
 entities exist, the cloud owns device identity/naming/desired-state.

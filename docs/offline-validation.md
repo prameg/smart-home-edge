@@ -56,8 +56,9 @@ live cloud broker.
    broker against the agent's persistent session (`clean_session=false`, stable
    client id) and is delivered on reconnect. **PASS:** the command applies if
    still within `ttl_sec`, else the cloud shows it `expired` (both are correct).
-4. **Retained shadow reconverges** — the retained `shadow/desired` from B.4 is
-   delivered on subscribe; the agent applies it and reports the version. **PASS:**
+4. **Retained shadow reconverges** — the retained per-device
+   `shadow/desired/{device_uid}` from B.4 is delivered on subscribe; the agent
+   applies it and reports the version. **PASS:**
    `reported_version == desired_version` again.
 5. **Buffered uplinks flush + reconnect reconcile** — the recent uplinks from
    B.3 are published on reconnect, and the agent additionally re-reports every

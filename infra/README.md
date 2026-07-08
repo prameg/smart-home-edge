@@ -23,14 +23,18 @@ from.
 authn + ACL cache in front). The broker shared secret is carried in the **URL
 path** — go-auth's HTTP backend has no way to send a custom header, only to set
 the request URI, so `/api/v1/broker/<SECRET>/…` is how the cloud authenticates
-the broker. (This replaces an earlier proxy-sidecar workaround; superseded by
-per-gateway mTLS in Phase 4.)
+the broker. (This replaces an earlier proxy-sidecar workaround.)
+
+The `8883` listener is **server-only TLS**: gateways verify the broker's server
+cert with normal system trust and prove their own identity with per-gateway
+username/password + ACL, not a client cert. Client-cert mTLS is **deferred**
+(see `mosquitto/certs/README.md`).
 
 ## Setup
 
 ```bash
 cp .env.example .env          # set CLOUD_HOST, CLOUD_PORT, SMART_HOME_BROKER_AUTH_SECRET
-# Put ca.crt / server.crt / server.key in mosquitto/certs/ (see its README)
+# Seed the server cert into the stable mount (see "TLS cert" below), then:
 docker compose up -d
 docker compose logs -f mosquitto
 ```
@@ -38,6 +42,57 @@ docker compose logs -f mosquitto
 The cloud must have, in its environment, the SAME
 `SMART_HOME_BROKER_AUTH_SECRET`, plus `SMART_HOME_PROVISIONING_FACTORY_KEY` for
 the agent's provisioning call.
+
+## TLS cert (Let's Encrypt) + renewal hook
+
+The compose binds the **stable host dir `/opt/mosquitto/certs`** (not Forge's
+numbered `/etc/nginx/ssl/<domain>/<id>` path, which changes on every renewal and
+would move the mount out from under the container). Let's Encrypt issues and
+auto-renews the cert (via Forge); a small host hook keeps the stable dir in sync
+and reloads Mosquitto on change.
+
+1. Create the stable dir and seed it before the first `up`:
+
+```bash
+sudo mkdir -p /opt/mosquitto/certs
+```
+
+2. Install `/opt/mosquitto/sync-certs.sh` (resolves the current cert straight
+   from the nginx vhost, so it follows each renewal; reloads only on change):
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN=broker.example.com
+VHOST=/etc/nginx/sites-available/$DOMAIN
+DEST=/opt/mosquitto/certs
+INFRA=/home/forge/edge/infra          # dir containing docker-compose.yml
+
+CRT=$(awk '/ssl_certificate /   {gsub(";","",$2); print $2; exit}' "$VHOST")
+KEY=$(awk '/ssl_certificate_key/ {gsub(";","",$2); print $2; exit}' "$VHOST")
+
+install -m 644 "$CRT" "$DEST/server.crt.new"
+install -m 640 "$KEY" "$DEST/server.key.new"
+
+if ! cmp -s "$DEST/server.crt.new" "$DEST/server.crt"; then
+  mv -f "$DEST/server.crt.new" "$DEST/server.crt"
+  mv -f "$DEST/server.key.new" "$DEST/server.key"
+  ( cd "$INFRA" && docker compose kill -s HUP mosquitto ) || \
+    ( cd "$INFRA" && docker compose up -d mosquitto )
+else
+  rm -f "$DEST/server.crt.new" "$DEST/server.key.new"
+fi
+```
+
+3. Mosquitto reloads TLS certs on **SIGHUP** (no restart, no dropped sessions).
+   The cert/key under `/etc/nginx/ssl` are root-owned, so schedule the script
+   **as root** (Forge Scheduler with user `root`, or root's crontab) daily, and
+   run it once by hand to seed the dir before the first `docker compose up -d`.
+
+For a spike without Let's Encrypt, drop a self-signed `server.crt`/`server.key`
+into `mosquitto/certs/` and point the compose mount at that dir instead (see
+`mosquitto/certs/README.md`).
 
 ## Smoke tests
 

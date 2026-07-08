@@ -370,7 +370,12 @@ func (c *Client) EntityInventory(ctx context.Context) ([]contract.InventoryEntit
 	out := make([]contract.InventoryEntity, 0, len(entities))
 
 	for _, e := range entities {
-		// Skip entities the user has disabled or hidden — they are not live.
+		// Skip entities the user has disabled or hidden — they are not live, so
+		// they never reach the cloud. A later disable/hide of an
+		// already-registered entity simply drops it from this list, which the
+		// cloud cannot tell apart from a vanished entity: both flag the device
+		// `missing_since` (see DeviceInventorySync). That conflation is
+		// deliberate for now — disabled/hidden and faulted all read as "missing".
 		if e.EntityID == "" || e.DisabledBy != nil || e.HiddenBy != nil {
 			continue
 		}

@@ -40,6 +40,9 @@ Semantics:
   Convergence is `reported_version == desired_version`; there is no separate
   state ack. Absent `version` means "still converged" (pure telemetry, no
   desired ever set) — this is also what the (re)connect reconcile publishes.
+  Each accepted state TRANSITION is appended to the cloud's `device_state_changes`
+  history (a re-report of the same state is not); this is a cloud-internal seam,
+  not part of the wire.
 - **event** — deduped on `event_id` (an indexed, unique-per-home column); a
   redelivery never creates a duplicate row.
 - **inventory** — retained snapshot of the gateway's HA entities. The cloud
@@ -48,8 +51,9 @@ Semantics:
   deletes), and republishes `config` when the device set changes. Deduped on
   `hash`: an unchanged retained redelivery is a no-op. Each entry also carries
   HA's grouping metadata — `device_class`, `unit_of_measurement`, and the HA
-  device-registry `ha_device_id`/`ha_device_name` — read from HA's entity +
-  device registries; `area` seeds the cloud's first-class room once.
+  device-registry `ha_device_id`/`ha_device_name` — which are HA-authoritative
+  (refreshed on every resync) and stored as columns on `devices`; `area` seeds a
+  first-class `rooms` row once (cloud-owned thereafter).
 - **cmd/ack** — idempotent; a command already in a terminal state is not
   re-transitioned.
 - **availability** — drives `gateways.is_online` + `gateways.last_seen_at`. HA's
@@ -95,7 +99,10 @@ Both the reported `state` (uplink) and the desired `state` (downlink `state`
 field) use **one HA-native shape**, so they are directly comparable:
 
 ```json
-{ "state": "<ha state string>", "attributes": { "brightness": 200, "...": "..." } }
+{
+    "state": "<ha state string>",
+    "attributes": { "brightness": 200, "...": "..." }
+}
 ```
 
 - `state` is HA's state string for the entity (`"on"`, `"off"`, a sensor's
@@ -104,18 +111,18 @@ field) use **one HA-native shape**, so they are directly comparable:
   document. (Historically the agent echoed the desired doc back as the reported
   state, which made `reported_state` a meaningless mirror of `desired_state`;
   that is fixed — the agent reads HA back and reports the real state.)
-- **Desired** is the same shape used as a *target*. The agent translates it to
+- **Desired** is the same shape used as a _target_. The agent translates it to
   the appropriate HA service call(s) via a **per-domain capability table**
-  (`smart-home-agent/internal/agent/translate.go`), mirrored on the cloud by
+  (`internal/agent/translate.go`), mirrored on the cloud by
   `App\Support\SmartHome\DeviceCapabilities` (which validates desired/command
-  payloads) and in `resources/js/types/smart-home.ts` (UI control selection).
-  Coverage: `light`/`switch`/`fan` (on/off + attributes like
+  payloads) and in `resources/js/types/smart-home.ts` (which picks the UI
+  control). Coverage: `light`/`switch`/`fan` (on/off + attributes like
   `brightness`/`percentage`), `lock` (`locked`/`unlocked`), `cover`
   (`open`/`closed` or an `attributes.position`), `climate` (state = hvac mode via
   `set_hvac_mode`, plus `attributes.temperature` via `set_temperature` — one
   document can expand to several ordered calls), and `media_player`
   (play/pause/on/off + `volume_level`). Unknown domains fall back to generic
-  on/off via the `homeassistant` domain; `sensor`/`binary_sensor` are read-only.
+  on/off via the `homeassistant` domain. `sensor`/`binary_sensor` are read-only.
   Adding a domain is one entry in each of the three mirrors; the shape does not
   change.
 
@@ -133,6 +140,13 @@ unsubscribing `cmd` + `shadow/desired/#` and clearing its entity map — when a
 config reports `claimed: false`), and the cloud ingest drops any home-scoped
 message from an unclaimed gateway — three independent layers of one gate.
 
+**Cloud broker principal.** The cloud's own MQTT clients (the `mqtt:subscribe`
+uplink daemon and the transient downlink publisher) are not gateway rows; they
+authenticate to the broker as a single configured service account
+(`SMART_HOME_CLOUD_MQTT_USERNAME`/`_PASSWORD`) that the broker-auth endpoint
+recognizes and grants superuser (ACL-exempt) rights, so they can read the
+`homes/+/…` uplink filters and write/clear any `homes/{uid}/…` downlink topic.
+
 ## Session / reconnect
 
 - The agent connects with `clean_session=false` and a **stable client id** so the
@@ -141,9 +155,8 @@ message from an unclaimed gateway — three independent layers of one gate.
   `shadow/desired/{device_uid}` + last-will self-heal; no provisioning round-trip
   is needed. The provisioning HTTP endpoint is only touched on first boot or
   recovery (see below).
-- Reconnection is **agent-driven** (`internal/agent` supervises the broker
-  connection), not Paho auto-reconnect: a broker credential rejection (a password
-  the cloud rotated) is caught via `mqtt.IsAuthError` and triggers a re-provision
+- Reconnection is **agent-driven**, not Paho auto-reconnect: a broker credential
+  rejection (a password the cloud rotated) is caught and triggers a re-provision
   before the next attempt, instead of looping on a dead password forever.
 
 ## Provisioning & claim (HTTP)
@@ -151,21 +164,22 @@ message from an unclaimed gateway — three independent layers of one gate.
 Provisioning and claiming happen over **HTTP**, around the MQTT session. The
 device-facing endpoints carry no Sanctum session; authorization is decided by
 **which secret** is presented, so exactly one credential can be wrong per
-operation. The client lives in `smart-home-agent/internal/provision`.
+operation.
 
 ### Three secrets, three jobs
 
-- **Factory key** — the shared enrollment secret (add-on option `factory_key` /
-  `FACTORY_KEY`), presented as a `Bearer` token. **Creation-only**: it authorizes
-  enrolling a *new* serial and can never rotate a live gateway's credentials —
-  except inside an admin-opened re-enrollment window. Worst-case leak is
-  throttled, admin-visible spam of unclaimed rows, never a hijack of a live unit.
+- **Factory key** — the shared enrollment secret
+  (`SMART_HOME_PROVISIONING_FACTORY_KEY`), presented as a `Bearer` token (or the
+  `X-Auth-Secret` header). **Creation-only**: it authorizes enrolling a _new_
+  serial and can never rotate a live gateway's credentials — except inside an
+  admin-opened re-enrollment window. Worst-case leak is throttled, admin-visible
+  spam of unclaimed rows, never a hijack of a live unit.
 - **Provision token** — the per-gateway recovery secret, minted once at
   enrollment and stored by the device in `/data/agent-creds.json`. The **only**
   secret that re-provisions an existing serial (rotating its MQTT password) while
   keeping the same `uid` and the home/claim binding.
 - **Claim code** — a short, human-typeable, expiring `XXXX-XXXX` code drawn from
-  an unambiguous alphabet. Low-privilege: it only binds an *unclaimed* gateway to
+  an unambiguous alphabet. Low-privilege: it only binds an _unclaimed_ gateway to
   a home, so it is safe to display on-device.
 
 ### `POST /api/v1/provisioning/gateways` — enroll or recover
@@ -180,8 +194,7 @@ plus an optional `Authorization: Bearer <factory_key>`.
 - **serial known → RECOVER** (needs a valid `provision_token`): rotates the MQTT
   password, preserves `uid` + home/claim binding, and reissues a `claim_code`
   only while still unclaimed. The `provision_token` is **not** resent (the device
-  already holds it), so the agent keeps its stored token rather than blanking it.
-  `200`.
+  already holds it). `200`.
 - **serial known but token lost** (factory-reset unit): recovery is refused
   unless an admin has opened a re-enrollment window on the fleet page; inside it
   the factory key re-enrolls that known serial once, rotating **both** the MQTT
@@ -191,12 +204,12 @@ Response:
 `{ "uid", "topic_namespace", "claim_status", "mqtt": { "username", "password" }, "provision_token": <string|null>, "claim_code": <string|null>, "claim_code_expires_at": <iso8601|null> }`.
 
 Errors are `{ "error": "<code>", "message": "<human>" }` with stable codes the
-agent branches on (`provision.Error`):
+agent branches on:
 
-| status | `error`                   | meaning                                                             |
-| ------ | ------------------------- | ------------------------------------------------------------------- |
-| 401    | `factory_key_required`    | new serial with a missing/invalid factory key                       |
-| 409    | `recovery_not_authorized` | known serial with a bad/absent token and no open re-enroll window   |
+| status | `error`                   | meaning                                                           |
+| ------ | ------------------------- | ----------------------------------------------------------------- |
+| 401    | `factory_key_required`    | new serial with a missing/invalid factory key                     |
+| 409    | `recovery_not_authorized` | known serial with a bad/absent token and no open re-enroll window |
 
 ### `POST /api/v1/provisioning/gateways/claim-code` — reissue
 
@@ -204,6 +217,15 @@ agent branches on (`provision.Error`):
 Mints a fresh code for a still-unclaimed unit **without** touching MQTT
 credentials; returns `409 already_claimed` once claimed. The agent calls it when
 its on-device code is missing or expired (e.g. after an unclaim cleared it).
+
+### `POST /api/v1/gateways/claim` — user-facing (Sanctum)
+
+Binds an unclaimed gateway to a home for the signed-in user:
+`{ "claim_code", "home_id"?, "home_name"? }`. The code is normalized
+(case/dashes) then matched by hash; an expired or already-claimed code is
+rejected. On success the code is cleared and the retained `config` doc is
+published (`claimed: true`), flipping the agent into claimed mode with no
+provisioning round-trip.
 
 ### Edge behavior
 

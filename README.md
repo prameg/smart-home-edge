@@ -71,10 +71,15 @@ To run the agent outside HAOS against your HA VM + a local broker, see
 
 ## Not built yet (honest gaps)
 
-- **mTLS** per gateway — today it's per-gateway username/password over TLS
-  (Phase 4 replaces the URL-path broker secret + password with client certs).
+- **mTLS** per gateway — deferred. Today it's per-gateway username/password over
+  server-only TLS + per-gateway ACL, which is sufficient; if adopted later,
+  per-gateway client certs (revocable per device) are preferred over a shared
+  fleet cert.
 - **Fleet-release rollout automation** — the version manifest exists
   (`docs/fleet-release.md`) but rolling a release across a fleet is manual.
+- **Device events/alarms** — the event topic + cloud `events` table are wired,
+  but the agent only emits `agent.boot` today; no device-level alarms (motion,
+  door, low battery, offline) are produced yet.
 - **Per-domain desired translation beyond on/off** — locks, covers and climate
   setpoints fall back to on/off + attribute passthrough for now.
 - **Deployed TLS broker node** — `infra/` is ready to stand up but not yet a
