@@ -411,7 +411,11 @@ func (a *Agent) handleStateChange(sc ha.StateChange) {
 			"attributes": sc.Attributes,
 		},
 		Version: version,
-		TS:      time.Now().UTC().Format(time.RFC3339),
+		// RFC3339Nano (sub-second), not RFC3339: `ts` is the cloud's tiebreaker
+		// for ordering same-version telemetry, and rapid toggles land inside the
+		// same wall-clock second. Second precision made them collide, so the
+		// cloud dropped every toggle after the first. See docs/mqtt-contract.md.
+		TS: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	a.publishUplink(contract.StateTopic(a.creds.UID, deviceUID), payload, false)
@@ -569,7 +573,9 @@ func (a *Agent) reportDeviceState(deviceUID string) {
 			"attributes": st.Attributes,
 		},
 		Version: version,
-		TS:      time.Now().UTC().Format(time.RFC3339),
+		// RFC3339Nano (sub-second) so the cloud's same-version `ts` tiebreaker can
+		// order reports that fall inside the same second (see handleStateChange).
+		TS: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
 	a.publishUplink(contract.StateTopic(a.creds.UID, deviceUID), payload, false)
