@@ -44,14 +44,25 @@ auth_plugin /mosquitto/go-auth.so
 auth_opt_backends http
 auth_opt_check_prefix false
 
+# Superuser checks are disabled: go-auth runs a superuser lookup on EVERY
+# connect, and the cloud endpoint returns Ok:false for every non-cloud principal
+# (i.e. every gateway) by design — which go-auth logs at info as
+# "api error: unauthorized", one benign line per gateway connect. With superuser
+# off, no such lookup happens; the cloud service account instead gets allow-all
+# from the ACL callback (BrokerAuthController::acl short-circuits the cloud
+# principal to true), so the only "api error" lines left are REAL denials
+# (bad gateway credentials or an out-of-namespace topic) worth reading.
+auth_opt_disable_superuser true
+
 # Call the Laravel cloud broker-auth callbacks directly over TLS. The shared
 # secret is carried in the URL PATH because go-auth cannot send a custom header.
+# No superuser_uri: superuser is disabled above (cloud principal is allow-listed
+# in the ACL callback instead).
 auth_opt_http_host ${CLOUD_HOST}
 auth_opt_http_port ${CLOUD_PORT}
 auth_opt_http_with_tls true
 auth_opt_http_verify_peer true
 auth_opt_http_getuser_uri /api/v1/broker/${SMART_HOME_BROKER_AUTH_SECRET}/auth
-auth_opt_http_superuser_uri /api/v1/broker/${SMART_HOME_BROKER_AUTH_SECRET}/superuser
 auth_opt_http_aclcheck_uri /api/v1/broker/${SMART_HOME_BROKER_AUTH_SECRET}/acl
 auth_opt_http_method POST
 auth_opt_http_response_mode json
