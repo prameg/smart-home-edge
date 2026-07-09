@@ -78,7 +78,8 @@ mosquitto_pub -h mqtt.prameg.net -p 8883 -u "$U" -P "$P" \
 ## 1. Prepare the unit
 
 1. **Flash stock HAOS** (or boot a fresh HAOS VM). First boot downloads Core and
-   can take several minutes.
+   can take several minutes. For our VirtualBox `Onboarding` VM, see
+   [`haos-vm-reset.md`](haos-vm-reset.md).
 2. The unit must be **genuinely fresh** — nobody has clicked through the HA
    onboarding wizard, and it is not a clone/snapshot of an already-onboarded
    unit. Otherwise `smart-onboard` reports *"owner already exists"* and you must
@@ -218,7 +219,7 @@ retained `availability`.
 | `401` on store/add-on steps that persists across re-runs | Old `smart-onboard` binary (HA locked the `/api/hassio` REST proxy) | Rebuild from `cmd/smart-onboard`; current builds use the `supervisor/api` WS command. |
 | Provisioning returns `401` | Factory key mismatch | `--factory-key` must equal the cloud's `SMART_HOME_PROVISIONING_FACTORY_KEY`. |
 | Agent connects but every publish is ACL-denied | Broker secret mismatch, or go-auth can't reach the cloud | Align `SMART_HOME_BROKER_AUTH_SECRET` on the cloud and `infra/.env`; check `docker compose logs` on the broker. |
-| "owner already exists" on a supposedly fresh unit | Image isn't fresh (cloned snapshot, or someone used the browser wizard) | Supply that owner's credentials, or re-flash stock HAOS. |
+| "owner already exists" on a supposedly fresh unit | Image isn't fresh (cloned snapshot, or someone used the browser wizard) | Supply that owner's credentials, or re-flash stock HAOS ([`haos-vm-reset.md`](haos-vm-reset.md) for the VirtualBox VM). |
 | Claim code invalid/expired | TTL elapsed (default 24h, `SMART_HOME_CLAIM_CODE_TTL_HOURS`) or typo | Reissue from the Smart Home panel → **Reissue claim code**. |
 | Devices empty after claim | No allow-listed entities (`light`, `switch`, …) | **Create test light** + **Republish inventory**, or add a real entity. |
 | Gateway stays offline in the cloud | `mqtt:subscribe`/queue down, or broker unreachable | Check the Forge daemons and the broker `docker compose logs`. |

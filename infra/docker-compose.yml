@@ -31,12 +31,23 @@ services:
       - mosquitto-data:/mosquitto/data
     # Render the config from the template (envsubst) then exec mosquitto. This
     # keeps the secret + host out of the committed config file.
+    #
+    # `set -e` + the non-empty check are load-bearing: the go-auth image is
+    # Debian-based, so a wrong package manager (or a failed render) used to leave
+    # a 0-byte mosquitto.conf behind — the `>` redirect truncates the file before
+    # envsubst runs — and mosquitto would silently fall back to its default
+    # LOCAL-ONLY config (no 8883, no auth), so the cloud/gateways timed out.
+    # Fail hard instead of booting a misconfigured broker.
     entrypoint:
       - /bin/sh
       - -c
       - >-
-        apk add --no-cache gettext >/dev/null 2>&1 || true;
+        set -e;
+        command -v envsubst >/dev/null 2>&1
+        || (apt-get update && apt-get install -y --no-install-recommends gettext-base)
+        || apk add --no-cache gettext;
         envsubst < /mosquitto/config/mosquitto.conf.template > /mosquitto/config/mosquitto.conf;
+        test -s /mosquitto/config/mosquitto.conf;
         exec mosquitto -c /mosquitto/config/mosquitto.conf
 
 volumes:

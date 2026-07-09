@@ -25,6 +25,7 @@ repo's URL (Settings → Add-ons → Add-on Store → ⋮ → Repositories) and 
 | `docs/offline-validation.md` | Runbook for the offline-autonomy + reconnect-reconciliation acceptance test.   |
 | `docs/factory-onboarding.md` | Onboarding decision + `smart-onboard` runbook (stock HAOS + CLI; Supervised rejected; Jetson-as-companion recorded). |
 | `docs/production-onboarding.md` | Team runbook: onboard a gateway against the live cloud (`smart.prameg.net`) + broker (`mqtt.prameg.net`), repeatable per unit. |
+| `docs/haos-vm-reset.md` | Reset the local VirtualBox `Onboarding` HAOS VM to stock (zip restore or snapshot). |
 
 ## The contract
 

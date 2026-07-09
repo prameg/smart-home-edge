@@ -213,7 +213,8 @@ needs no prompts — one binary, two entry points:
   cloned from a snapshot/disk of a previous unit, or a device where someone
   clicked partway through the browser onboarding wizard. Either supply the
   credentials that owner was created with, or **re-flash stock HAOS** for a
-  clean run (do not mix browser onboarding with the CLI on the same device).
+  clean run (do not mix browser onboarding with the CLI on the same device). For
+  the team's VirtualBox `Onboarding` VM, see [`haos-vm-reset.md`](haos-vm-reset.md).
 
 ### What the CLI does (steps)
 

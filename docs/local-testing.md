@@ -2,7 +2,8 @@
 
 You can exercise the whole agent against a **real** Home Assistant (your VM at
 `http://homeassistant.local:8123`) on your machine — no Pi, no external broker,
-no TLS. Two tracks:
+no TLS. To wipe the VirtualBox `Onboarding` VM back to stock HAOS, see
+[`haos-vm-reset.md`](haos-vm-reset.md). Two tracks:
 
 - **Track 1 — agent + HA + local broker, NO cloud.** Fastest. Proves the bridge
   end-to-end (HA events → MQTT uplink, MQTT downlink → HA service calls) using
