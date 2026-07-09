@@ -9,6 +9,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -94,7 +95,7 @@ func Load() (*Config, error) {
 		CloudBaseURL:    firstNonEmpty(opts.CloudBaseURL, os.Getenv("CLOUD_BASE_URL")),
 		FactoryKey:      firstNonEmpty(opts.FactoryKey, os.Getenv("FACTORY_KEY")),
 		Serial:          firstNonEmpty(opts.Serial, os.Getenv("GATEWAY_SERIAL")),
-		MQTTHost:        firstNonEmpty(opts.MQTTHost, os.Getenv("MQTT_HOST")),
+		MQTTHost:        normalizeMQTTHost(firstNonEmpty(opts.MQTTHost, os.Getenv("MQTT_HOST"))),
 		MQTTPort:        firstPositive(opts.MQTTPort, envInt("MQTT_PORT", 8883)),
 		MQTTTLS:         boolPref(opts.MQTTTLS, envBool("MQTT_TLS", true)),
 		MQTTTLSInsecure: boolPref(opts.MQTTTLSInsecure, envBool("MQTT_TLS_INSECURE", false)),
@@ -135,6 +136,27 @@ func (c *Config) validate() error {
 	}
 
 	return nil
+}
+
+// normalizeMQTTHost reduces a broker host to a bare hostname. The MQTT client
+// builds its own transport URL ("ssl://host:port"), so a value that carries a
+// scheme or port — e.g. a tester pasting the cloud URL "https://app.example.com"
+// into the "Broker host" field — otherwise becomes "ssl://https://…" and paho
+// resolves the literal host "https" ("dial tcp: lookup https: no such host").
+// Tolerate URL- or scheme-shaped input instead of failing cryptically.
+func normalizeMQTTHost(raw string) string {
+	host := strings.TrimSpace(raw)
+	if host == "" {
+		return ""
+	}
+
+	if strings.Contains(host, "://") {
+		if u, err := url.Parse(host); err == nil && u.Hostname() != "" {
+			return u.Hostname()
+		}
+	}
+
+	return strings.Trim(host, "/")
 }
 
 func loadOptions(path string) options {
