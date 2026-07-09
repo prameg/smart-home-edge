@@ -1,0 +1,60 @@
+# Build and publish the Smart Home Agent add-on image to GHCR.
+#
+# WHY this exists: gateways used to build the Go binary on-device (no `image:`
+# key), which is slow and fragile across a fleet of Pis. This workflow builds a
+# prebuilt multi-arch image per release so an update becomes a fast `docker pull`
+# on the gateway instead of a full on-device compile.
+#
+# Auth: no PAT/secret to manage. The job logs in to GHCR with the built-in
+# GITHUB_TOKEN (needs `packages: write`), which can push packages under this
+# repo/org. Make the resulting package PUBLIC once (in its GHCR settings) so
+# gateways pull anonymously with no credentials — the image is just a static Go
+# binary, no secrets baked in.
+name: Build add-on image
+
+on:
+  push:
+    # Release tags drive publishing. Tag `vX.Y.Z` must match config.yaml `version`.
+    tags:
+      - "v*"
+  # Manual trigger to (re)publish the version currently in config.yaml.
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # aarch64 is the Pi 5 target; the rest cover CI / other boards and match
+        # config.yaml `arch:` and build.yaml.
+        arch: [aarch64, amd64, armv7]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        uses: home-assistant/builder@2024.03.5
+        with:
+          # The HA builder reads the add-on `config.yaml` for the version and
+          # arch list, injects BUILD_* build args (BUILD_FROM from build.yaml,
+          # BUILD_VERSION from config.yaml `version` — the Dockerfile stamps the
+          # agent version from it), and pushes `<docker-hub>/<image>` with the
+          # `{arch}` placeholder substituted, tagged with the version + `latest`.
+          args: >-
+            --${{ matrix.arch }}
+            --target smart-home-agent
+            --image "{arch}-smart_home_agent"
+            --docker-hub "ghcr.io/${{ github.repository_owner }}/smart-home-edge"
+            --addon
