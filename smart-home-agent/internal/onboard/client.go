@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/smart-home/edge/agent/fleet"
+	"github.com/smart-home/edge/agent/internal/supervisor"
 )
 
 // Client is the real DeviceAPI: it speaks Home Assistant's public onboarding +
@@ -36,6 +36,11 @@ type Client struct {
 	// and /api/states call; set once the owner+token step authenticates
 	// (SetToken).
 	token string
+
+	// sup runs the Supervisor operations over this client's WS transport (Call),
+	// so add-on/OS/Core management is the one shared implementation the agent
+	// add-on also uses (see internal/supervisor).
+	sup *supervisor.Client
 }
 
 // claimCode / uid / claim_status parsing off the agent add-on's log stream and
@@ -46,6 +51,12 @@ var (
 	reClaimNotif  = regexp.MustCompile(`\*\*([A-Za-z0-9]{4}-[A-Za-z0-9]{4})\*\*`)
 	reUID         = regexp.MustCompile(`\buid=([0-9a-zA-Z_-]{8,})`)
 	reClaimStatus = regexp.MustCompile(`claim_status=([a-z]+)`)
+	// reSerial parses the hardware serial the agent logs alongside uid on its
+	// "provisioned" line (and at startup). Real serials (pi-<cpuserial>,
+	// host-<hostname>, unknown-serial, or a CLI override) carry no spaces, so a
+	// non-space capture is enough; slog only quotes values with spaces/specials,
+	// so any stray surrounding quotes are trimmed by the caller.
+	reSerial = regexp.MustCompile(`\bserial=(\S+)`)
 )
 
 // New builds a client for a gateway reachable at baseURL (e.g.
@@ -55,12 +66,15 @@ var (
 func New(baseURL string, log *slog.Logger) *Client {
 	base := strings.TrimRight(baseURL, "/")
 
-	return &Client{
+	c := &Client{
 		baseURL:  base,
 		clientID: base + "/",
 		http:     &http.Client{},
 		log:      log,
 	}
+	c.sup = supervisor.New(c, supervisorCallTimeout, installTimeout)
+
+	return c
 }
 
 // SetToken stores the token used for all later authenticated calls.
@@ -516,17 +530,13 @@ func (c *Client) dialAuthedWS(ctx context.Context, accessToken string) (*websock
 // (install/update) pass installTimeout instead.
 const supervisorCallTimeout = 90 * time.Second
 
-// supervisorError is a Supervisor-side failure (the supervisor/api command
-// returned success:false). It is kept distinct from a transport/auth error so
-// callers can treat an expected Supervisor "not installed"/"not found" as a soft
-// signal (the way the old /api/hassio proxy surfaced it as a 404) while still
-// propagating real failures.
-type supervisorError struct {
-	method, endpoint, message string
-}
-
-func (e *supervisorError) Error() string {
-	return fmt.Sprintf("supervisor %s %s: %s", e.method, e.endpoint, e.message)
+// Call implements supervisor.Transport: it reaches a Supervisor REST endpoint
+// through Core's authenticated "supervisor/api" WebSocket command. This is the
+// WS half of the shared Supervisor operations (the agent add-on supplies a
+// direct-HTTP half), so onboarding and fleet rollout drive Supervisor through
+// one code path in internal/supervisor.
+func (c *Client) Call(ctx context.Context, method, endpoint string, payload any, timeout time.Duration) (json.RawMessage, error) {
+	return c.supervisorAPI(ctx, method, endpoint, payload, timeout)
 }
 
 // supervisorAPI calls a Supervisor REST endpoint through Core's authenticated
@@ -589,7 +599,7 @@ func (c *Client) supervisorAPI(ctx context.Context, method, endpoint string, pay
 			continue
 		}
 		if !frame.Success {
-			return nil, &supervisorError{method: method, endpoint: endpoint, message: frame.Error.Message}
+			return nil, &supervisor.Error{Method: method, Endpoint: endpoint, Message: frame.Error.Message}
 		}
 
 		return frame.Result, nil
@@ -619,217 +629,82 @@ func (c *Client) tryFinishStep(ctx context.Context, path string, payload any) {
 	}
 }
 
+// The Supervisor operations below all delegate to the shared internal/supervisor
+// client over this Client's WS transport (see Call), so the CLI and the agent
+// add-on drive Supervisor through exactly one implementation. The thin wrappers
+// remain because they satisfy the DeviceAPI seam the onboarding steps test
+// against.
+
 // StoreRepositories lists the registered add-on store repository URLs.
 func (c *Client) StoreRepositories(ctx context.Context) ([]string, error) {
-	data, err := c.supervisorAPI(ctx, "get", "/store/repositories", nil, supervisorCallTimeout)
-	if err != nil {
-		return nil, err
-	}
-
-	var repos []struct {
-		URL string `json:"url"`
-	}
-	if err := json.Unmarshal(data, &repos); err != nil {
-		return nil, fmt.Errorf("store repositories: decode: %w", err)
-	}
-
-	urls := make([]string, 0, len(repos))
-	for _, r := range repos {
-		if r.URL != "" {
-			urls = append(urls, r.URL)
-		}
-	}
-
-	return urls, nil
+	return c.sup.StoreRepositories(ctx)
 }
 
 // AddStoreRepository registers a repository and reloads the store so its add-ons
 // become resolvable.
 func (c *Client) AddStoreRepository(ctx context.Context, repoURL string) error {
-	if _, err := c.supervisorAPI(ctx, "post", "/store/repositories", map[string]string{"repository": repoURL}, supervisorCallTimeout); err != nil {
-		return err
-	}
-
-	// Reload is best-effort; the repository add itself already refreshes.
-	if _, err := c.supervisorAPI(ctx, "post", "/store/reload", nil, supervisorCallTimeout); err != nil {
-		c.log.Debug("store reload failed (non-fatal)", "error", err)
-	}
-
-	return nil
+	return c.sup.AddStoreRepository(ctx, repoURL)
 }
 
-// ResolveAddonSlug returns the full Supervisor slug for a manifest add-on. Exact
-// slugs (built-in core_* add-ons) bypass the store lookup; otherwise it matches
-// the store, which is how a repo-hash-prefixed community/agent slug is found.
+// ResolveAddonSlug returns the full Supervisor slug for a manifest add-on.
 func (c *Client) ResolveAddonSlug(ctx context.Context, a fleet.Addon) (string, bool, error) {
-	if a.Slug != "" {
-		return a.Slug, true, nil
-	}
-
-	data, err := c.supervisorAPI(ctx, "get", "/store", nil, supervisorCallTimeout)
-	if err != nil {
-		return "", false, err
-	}
-
-	var store struct {
-		Addons []struct {
-			Slug string `json:"slug"`
-		} `json:"addons"`
-	}
-	if err := json.Unmarshal(data, &store); err != nil {
-		return "", false, fmt.Errorf("resolve %q: decode store: %w", a.Match, err)
-	}
-
-	for _, sa := range store.Addons {
-		if a.Resolves(sa.Slug) {
-			return sa.Slug, true, nil
-		}
-	}
-
-	return "", false, nil
+	return c.sup.ResolveAddonSlug(ctx, a)
 }
 
-// AddonInfo returns an add-on's install state. A Supervisor-side error on the
-// info endpoint means the add-on is known to the store but not installed (the
-// old /api/hassio proxy surfaced this as a 404); a transport/auth error is a
-// real failure and propagates.
+// AddonInfo returns an add-on's install state.
 func (c *Client) AddonInfo(ctx context.Context, slug string) (AddonInfo, error) {
-	data, err := c.supervisorAPI(ctx, "get", "/addons/"+slug+"/info", nil, supervisorCallTimeout)
-	if err != nil {
-		var se *supervisorError
-		if errors.As(err, &se) {
-			return AddonInfo{Slug: slug, Installed: false}, nil
-		}
-
-		return AddonInfo{}, err
-	}
-
-	var info struct {
-		Version    string         `json:"version"`
-		State      string         `json:"state"`
-		AutoUpdate bool           `json:"auto_update"`
-		Options    map[string]any `json:"options"`
-	}
-	if err := json.Unmarshal(data, &info); err != nil {
-		return AddonInfo{}, fmt.Errorf("addon info %q: decode: %w", slug, err)
-	}
-
-	return AddonInfo{
-		Slug:       slug,
-		Installed:  info.Version != "",
-		Version:    info.Version,
-		State:      info.State,
-		AutoUpdate: info.AutoUpdate,
-		Options:    info.Options,
-	}, nil
+	return c.sup.AddonInfo(ctx, slug)
 }
 
-// InstallAddon installs an add-on's latest version, tolerating the two path
-// shapes different Supervisor versions expose.
+// InstallAddon installs an add-on's latest version.
 func (c *Client) InstallAddon(ctx context.Context, slug string) error {
-	return c.addonMutate(ctx, slug, "install", nil)
+	return c.sup.InstallAddon(ctx, slug)
 }
 
 // UpdateAddon moves an installed add-on to a specific version (used to pin).
 func (c *Client) UpdateAddon(ctx context.Context, slug, version string) error {
-	return c.addonMutate(ctx, slug, "update", map[string]string{"version": version})
-}
-
-// addonMutate posts an install/update, trying the /store/addons form first then
-// the /addons form (different Supervisor versions expose one or the other). It
-// forwards installTimeout as the server-side timeout because a first install
-// pulls a container image.
-func (c *Client) addonMutate(ctx context.Context, slug, action string, payload any) error {
-	_, err := c.supervisorAPI(ctx, "post", "/store/addons/"+slug+"/"+action, payload, installTimeout)
-	if err == nil {
-		return nil
-	}
-
-	// Only a Supervisor-side rejection (e.g. the store form not existing on this
-	// version) warrants trying the legacy form; a transport error is terminal.
-	var se *supervisorError
-	if !errors.As(err, &se) {
-		return err
-	}
-
-	if _, ferr := c.supervisorAPI(ctx, "post", "/addons/"+slug+"/"+action, payload, installTimeout); ferr != nil {
-		return fmt.Errorf("addon %s %q: %w", action, slug, ferr)
-	}
-
-	return nil
+	return c.sup.UpdateAddon(ctx, slug, version)
 }
 
 // SetAddonOptions writes an add-on's user options.
 func (c *Client) SetAddonOptions(ctx context.Context, slug string, options map[string]any) error {
-	_, err := c.supervisorAPI(ctx, "post", "/addons/"+slug+"/options", map[string]any{"options": options}, supervisorCallTimeout)
-
-	return err
+	return c.sup.SetAddonOptions(ctx, slug, options)
 }
 
 // SetAddonAutoUpdate toggles an add-on's auto-update flag.
 func (c *Client) SetAddonAutoUpdate(ctx context.Context, slug string, enabled bool) error {
-	_, err := c.supervisorAPI(ctx, "post", "/addons/"+slug+"/options", map[string]any{"auto_update": enabled}, supervisorCallTimeout)
-
-	return err
+	return c.sup.SetAddonAutoUpdate(ctx, slug, enabled)
 }
 
 // StartAddon starts an installed add-on.
 func (c *Client) StartAddon(ctx context.Context, slug string) error {
-	_, err := c.supervisorAPI(ctx, "post", "/addons/"+slug+"/start", nil, supervisorCallTimeout)
-
-	return err
+	return c.sup.StartAddon(ctx, slug)
 }
 
-// RestartAddon restarts an installed add-on. Home Assistant loads an add-on's
-// options only at container start, so a config change written to an already
-// running add-on takes effect only after a restart.
+// RestartAddon restarts an installed add-on so option changes written while it
+// was running take effect (HA loads add-on options only at start).
 func (c *Client) RestartAddon(ctx context.Context, slug string) error {
-	_, err := c.supervisorAPI(ctx, "post", "/addons/"+slug+"/restart", nil, supervisorCallTimeout)
-
-	return err
+	return c.sup.RestartAddon(ctx, slug)
 }
 
 // OSInfo reports the running vs latest Home Assistant OS version.
 func (c *Client) OSInfo(ctx context.Context) (VersionInfo, error) {
-	return c.versionInfo(ctx, "/os/info")
+	return c.sup.OSInfo(ctx)
 }
 
 // CoreInfo reports the running vs latest Home Assistant Core version.
 func (c *Client) CoreInfo(ctx context.Context) (VersionInfo, error) {
-	return c.versionInfo(ctx, "/core/info")
+	return c.sup.CoreInfo(ctx)
 }
 
-func (c *Client) versionInfo(ctx context.Context, path string) (VersionInfo, error) {
-	data, err := c.supervisorAPI(ctx, "get", path, nil, supervisorCallTimeout)
-	if err != nil {
-		return VersionInfo{}, err
-	}
-
-	var info struct {
-		Version string `json:"version"`
-		Latest  string `json:"version_latest"`
-	}
-	if err := json.Unmarshal(data, &info); err != nil {
-		return VersionInfo{}, fmt.Errorf("version info %q: decode: %w", path, err)
-	}
-
-	return VersionInfo{Version: info.Version, Latest: info.Latest}, nil
-}
-
-// UpdateOS converges Home Assistant OS to a version (slow: forwards
-// installTimeout server-side).
+// UpdateOS converges Home Assistant OS to a version.
 func (c *Client) UpdateOS(ctx context.Context, version string) error {
-	_, err := c.supervisorAPI(ctx, "post", "/os/update", map[string]string{"version": version}, installTimeout)
-
-	return err
+	return c.sup.UpdateOS(ctx, version)
 }
 
-// UpdateCore converges Home Assistant Core to a version (slow: forwards
-// installTimeout server-side).
+// UpdateCore converges Home Assistant Core to a version.
 func (c *Client) UpdateCore(ctx context.Context, version string) error {
-	_, err := c.supervisorAPI(ctx, "post", "/core/update", map[string]string{"version": version}, installTimeout)
-
-	return err
+	return c.sup.UpdateCore(ctx, version)
 }
 
 // ClaimInfo reads the agent's identity + claim code from its add-on log stream,
@@ -844,6 +719,9 @@ func (c *Client) ClaimInfo(ctx context.Context, agentSlug string) (ClaimInfo, er
 	info := ClaimInfo{}
 	if m := reUID.FindStringSubmatch(logs); m != nil {
 		info.UID = m[1]
+	}
+	if m := reSerial.FindStringSubmatch(logs); m != nil {
+		info.Serial = strings.Trim(m[1], `"`)
 	}
 	if m := reClaimStatus.FindStringSubmatch(logs); m != nil {
 		info.Claimed = m[1] == "claimed"

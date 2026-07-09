@@ -85,6 +85,10 @@ func printDone(w io.Writer, st *onboard.State) {
 	fmt.Fprintln(w, "  Gateway is ready.")
 	fmt.Fprintf(w, "  uid:    %s\n", st.Claim.UID)
 
+	if serial := resolvedSerial(st); serial != "" {
+		fmt.Fprintf(w, "  serial: %s\n", serial)
+	}
+
 	if st.Claim.Claimed {
 		fmt.Fprintln(w, "  status: already claimed — no code needed.")
 	} else if st.Claim.ClaimCode != "" {
@@ -96,4 +100,21 @@ func printDone(w io.Writer, st *onboard.State) {
 	}
 
 	fmt.Fprintf(w, "%s\n", line)
+}
+
+// resolvedSerial is the hardware serial to show on the done screen. The ground
+// truth is what the agent logged it enrolled under (st.Claim.Serial); if that
+// scrolled out of the log window we fall back to an operator-supplied override
+// (--serial, carried in the add-on options), which is the same value the agent
+// would have used.
+func resolvedSerial(st *onboard.State) string {
+	if st.Claim.Serial != "" {
+		return st.Claim.Serial
+	}
+
+	if s, ok := st.AgentOptions["serial"].(string); ok {
+		return s
+	}
+
+	return ""
 }

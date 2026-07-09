@@ -38,7 +38,11 @@ type Config struct {
 	// "supervisor" and the token is injected; overridable for local dev.
 	SupervisorToken string
 	HARestBaseURL   string // e.g. http://supervisor/core/api
-	HAWebsocketURL  string // e.g. ws://supervisor/core/websocket
+	// SupervisorBaseURL is the Supervisor REST root the agent uses to self-update
+	// to a cloud-pushed release (add-on/OS/Core management). In an add-on it is
+	// "http://supervisor"; overridable for local dev / tests.
+	SupervisorBaseURL string
+	HAWebsocketURL    string // e.g. ws://supervisor/core/websocket
 
 	// DataDir is the add-on's persistent, private volume (/data in HAOS).
 	// Credentials and applied-version state live here so they survive restarts
@@ -92,21 +96,22 @@ func Load() (*Config, error) {
 	opts := loadOptions(dataDir + "/options.json")
 
 	cfg := &Config{
-		CloudBaseURL:    firstNonEmpty(opts.CloudBaseURL, os.Getenv("CLOUD_BASE_URL")),
-		FactoryKey:      firstNonEmpty(opts.FactoryKey, os.Getenv("FACTORY_KEY")),
-		Serial:          firstNonEmpty(opts.Serial, os.Getenv("GATEWAY_SERIAL")),
-		MQTTHost:        normalizeMQTTHost(firstNonEmpty(opts.MQTTHost, os.Getenv("MQTT_HOST"))),
-		MQTTPort:        firstPositive(opts.MQTTPort, envInt("MQTT_PORT", 8883)),
-		MQTTTLS:         boolPref(opts.MQTTTLS, envBool("MQTT_TLS", true)),
-		MQTTTLSInsecure: boolPref(opts.MQTTTLSInsecure, envBool("MQTT_TLS_INSECURE", false)),
-		SupervisorToken: os.Getenv("SUPERVISOR_TOKEN"),
-		HARestBaseURL:   envOr("HA_REST_BASE_URL", "http://supervisor/core/api"),
-		HAWebsocketURL:  envOr("HA_WEBSOCKET_URL", "ws://supervisor/core/websocket"),
-		DataDir:         dataDir,
-		ConfigDir:       envOr("AGENT_CONFIG_DIR", dataDir),
-		AgentVersion:    AgentVersion,
-		WebUIPort:       envInt("WEBUI_PORT", 8099),
-		LogLevel:        firstNonEmpty(opts.LogLevel, envOr("LOG_LEVEL", "info")),
+		CloudBaseURL:      firstNonEmpty(opts.CloudBaseURL, os.Getenv("CLOUD_BASE_URL")),
+		FactoryKey:        firstNonEmpty(opts.FactoryKey, os.Getenv("FACTORY_KEY")),
+		Serial:            firstNonEmpty(opts.Serial, os.Getenv("GATEWAY_SERIAL")),
+		MQTTHost:          normalizeMQTTHost(firstNonEmpty(opts.MQTTHost, os.Getenv("MQTT_HOST"))),
+		MQTTPort:          firstPositive(opts.MQTTPort, envInt("MQTT_PORT", 8883)),
+		MQTTTLS:           boolPref(opts.MQTTTLS, envBool("MQTT_TLS", true)),
+		MQTTTLSInsecure:   boolPref(opts.MQTTTLSInsecure, envBool("MQTT_TLS_INSECURE", false)),
+		SupervisorToken:   os.Getenv("SUPERVISOR_TOKEN"),
+		SupervisorBaseURL: envOr("SUPERVISOR_BASE_URL", "http://supervisor"),
+		HARestBaseURL:     envOr("HA_REST_BASE_URL", "http://supervisor/core/api"),
+		HAWebsocketURL:    envOr("HA_WEBSOCKET_URL", "ws://supervisor/core/websocket"),
+		DataDir:           dataDir,
+		ConfigDir:         envOr("AGENT_CONFIG_DIR", dataDir),
+		AgentVersion:      AgentVersion,
+		WebUIPort:         envInt("WEBUI_PORT", 8099),
+		LogLevel:          firstNonEmpty(opts.LogLevel, envOr("LOG_LEVEL", "info")),
 	}
 
 	if cfg.Serial == "" {

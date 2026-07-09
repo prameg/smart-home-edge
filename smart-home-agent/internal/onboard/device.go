@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/smart-home/edge/agent/fleet"
+	"github.com/smart-home/edge/agent/internal/supervisor"
 )
 
 // DeviceAPI is everything the onboarding steps do to a gateway, expressed as one
@@ -96,32 +97,22 @@ type OnboardingStatus struct {
 	AllDone bool
 }
 
-// AddonInfo is an add-on's install state as Supervisor reports it.
-type AddonInfo struct {
-	Slug      string
-	Installed bool
-	// Version is the installed version ("" when not installed).
-	Version string
-	// State is "started" / "stopped" (empty when not installed).
-	State string
-	// AutoUpdate is the current auto-update flag.
-	AutoUpdate bool
-	// Options is the add-on's current user options, used to skip a redundant
-	// re-write when the desired options already match.
-	Options map[string]any
-}
+// AddonInfo is an add-on's install state as Supervisor reports it. Aliased to
+// the shared supervisor package's type so the onboarding steps and the agent's
+// self-update path speak one shape.
+type AddonInfo = supervisor.AddonInfo
 
-// VersionInfo is a running-vs-latest version pair for OS / Core.
-type VersionInfo struct {
-	Version string
-	Latest  string
-}
+// VersionInfo is a running-vs-latest version pair for OS / Core (aliased to the
+// shared supervisor type).
+type VersionInfo = supervisor.VersionInfo
 
 // ClaimInfo is what the agent surfaces once it has provisioned: its cloud uid,
-// whether it is already claimed, and (while unclaimed) the short claim code the
-// installer reads off to bind the gateway to a home.
+// the hardware serial it enrolled under (auto-derived on the device unless the
+// operator overrode it), whether it is already claimed, and (while unclaimed)
+// the short claim code the installer reads off to bind the gateway to a home.
 type ClaimInfo struct {
 	UID       string
+	Serial    string
 	Claimed   bool
 	ClaimCode string
 }

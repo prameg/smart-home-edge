@@ -74,6 +74,22 @@ func ConfigTopic(gatewayUID string) string {
 	return fmt.Sprintf("%s/%s/config", Root, gatewayUID)
 }
 
+// VersionsTopic is the uplink RETAINED software-inventory topic. The agent
+// publishes it on every connect (and after a self-update reboot) so the cloud's
+// gateways.{agent,ha,os}_version and reported_release_id reflect what is ACTUALLY
+// running — independent of provisioning, which only ran at first boot/recovery.
+func VersionsTopic(gatewayUID string) string {
+	return fmt.Sprintf("%s/%s/versions", Root, gatewayUID)
+}
+
+// ReleaseDesiredTopic is the downlink RETAINED target-release topic. The cloud
+// publishes the release the gateway should converge to (agent version + optional
+// OS/Core/dependency add-on versions); the agent self-updates via the Supervisor
+// API and reports convergence back on VersionsTopic. Monotonic on ReleaseSeq.
+func ReleaseDesiredTopic(gatewayUID string) string {
+	return fmt.Sprintf("%s/%s/release/desired", Root, gatewayUID)
+}
+
 // StatePayload is the uplink homes/{uid}/state/{device_uid} body.
 //
 // State is HA-native — { "state": "<ha state string>", "attributes": {...} } —
@@ -194,4 +210,44 @@ type ConfigPayload struct {
 	ConfigVersion int                    `json:"config_version"`
 	EntityMap     []ConfigEntityMapEntry `json:"entity_map"`
 	TS            string                 `json:"ts"`
+}
+
+// VersionsPayload is the uplink retained homes/{uid}/versions body: the
+// gateway's currently-running software inventory. ReleaseID is the release the
+// agent has converged to ("" when the gateway has never been given a target),
+// so the cloud declares rollout convergence by reported_release_id ==
+// target_release_id — the same reported-vs-desired language as config/shadow.
+type VersionsPayload struct {
+	AgentVersion string `json:"agent_version"`
+	HAVersion    string `json:"ha_version,omitempty"`
+	OSVersion    string `json:"os_version,omitempty"`
+	ReleaseID    string `json:"release_id,omitempty"`
+	TS           string `json:"ts"`
+}
+
+// ReleaseAddon is one add-on target in a release: the stable inner slug to match
+// (or an exact slug), the pinned version, and the repo to register for a
+// community add-on. Mirrors the resolvable fields of the fleet manifest add-on
+// without coupling the wire to the fleet package.
+type ReleaseAddon struct {
+	Match      string `json:"match,omitempty"`
+	Slug       string `json:"slug,omitempty"`
+	Version    string `json:"version"`
+	Repository string `json:"repository,omitempty"`
+	Core       bool   `json:"core"`
+}
+
+// ReleasePayload is the downlink retained homes/{uid}/release/desired body: the
+// pinned version set the gateway should converge to. ReleaseSeq is monotonic (a
+// lower redelivery is ignored, mirroring config_version). AgentVersion is the
+// agent add-on target; the optional OS/Core/add-on versions extend a rollout to
+// the rest of the release. A blank version means "leave as-is / do not pin".
+type ReleasePayload struct {
+	ReleaseID    string         `json:"release_id"`
+	ReleaseSeq   int            `json:"release_seq"`
+	AgentVersion string         `json:"agent_version"`
+	HAOSVersion  string         `json:"haos_version,omitempty"`
+	CoreVersion  string         `json:"core_version,omitempty"`
+	Addons       []ReleaseAddon `json:"addons,omitempty"`
+	TS           string         `json:"ts"`
 }

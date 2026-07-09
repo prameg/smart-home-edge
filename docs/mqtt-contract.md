@@ -26,6 +26,7 @@ Assistant `entity_id`s (the agent applies the `devices.entity_map`).
 | `homes/{uid}/inventory`          | 1   | yes    | `{ "hash": "<string>", "entities": [{ "entity_id": "<string>", "domain": "<string>", "name": "<string>", "area"?: "<string>", "device_class"?: "<string>", "unit_of_measurement"?: "<string>", "ha_device_id"?: "<string>", "ha_device_name"?: "<string>" }], "ts": "<iso8601>" }` |
 | `homes/{uid}/cmd/ack`            | 1   | no     | `{ "cmd_id": "<uuid>", "status": "acked\|failed" }`                                                                    |
 | `homes/{uid}/availability`       | 1   | yes    | `online` (retained) / `offline` (last-will)                                                                            |
+| `homes/{uid}/versions`           | 1   | yes    | `{ "agent_version": "<string>", "ha_version"?: "<string>", "os_version"?: "<string>", "release_id"?: "<string>", "ts": "<iso8601>" }` |
 
 Semantics:
 
@@ -58,6 +59,13 @@ Semantics:
   re-transitioned.
 - **availability** — drives `gateways.is_online` + `gateways.last_seen_at`. HA's
   standard availability convention (a retained `online` / last-will `offline`).
+- **versions** — retained software inventory the agent publishes on every
+  (claimed) connect and after a self-update reboot, so `gateways.agent_version` /
+  `ha_version` / `os_version` reflect what is ACTUALLY running independent of
+  provisioning (which only ran at first boot / recovery). `release_id` is the
+  fleet release the agent has fully converged to; the cloud declares rollout
+  convergence by `reported_release_id == target_release_id`. Claimed-only (the
+  broker ACL confines an unclaimed gateway to `availability`/`config`).
 
 ## Downlink (cloud -> agent)
 
@@ -66,6 +74,7 @@ Semantics:
 | `homes/{uid}/cmd`                        | 1   | no     | `{ "cmd_id": "<uuid>", "device_uid": "<string>", "action": "<ha.service>", "params": {...}, "ts": "<iso8601>", "ttl_sec": <int>, "source": "user\|system" }` |
 | `homes/{uid}/shadow/desired/{device_uid}` | 1   | yes    | `{ "device_uid": "<string>", "desired_version": <int>, "state": { "state": "<string>", "attributes"?: {...} } }`                                             |
 | `homes/{uid}/config`                     | 1   | yes    | `{ "claimed": <bool>, "config_version": <int>, "entity_map": [{ "device_uid": "<string>", "entity_id": "<string>" }], "ts": "<iso8601>" }`                    |
+| `homes/{uid}/release/desired`            | 1   | yes    | `{ "release_id": "<string>", "release_seq": <int>, "agent_version": "<string>", "haos_version"?: "<string>", "core_version"?: "<string>", "addons"?: [{ "match"?, "slug"?, "version", "repository"?, "core" }], "ts": "<iso8601>" }` |
 
 Semantics:
 
@@ -92,6 +101,15 @@ Semantics:
   re-claimed), the cloud publishes empty retained payloads to every per-device
   `shadow/desired/{device_uid}` and to `inventory`, so a re-claimed gateway never
   inherits a previous home's desired state or inventory.
+- **release/desired** — retained target-release doc for cloud-orchestrated fleet
+  updates. Monotonic on `release_seq` (a lower redelivery is ignored, mirroring
+  `config_version`). Carries the agent add-on version to converge to and,
+  optionally, OS/Core/dependency-add-on versions. The agent self-updates via the
+  Supervisor API — dependency add-ons first, then OS, then Core, and its OWN
+  add-on LAST (a self-update restarts it) — and reports convergence back on the
+  `versions` topic. Resume-safe: an OS/self update reboots the unit and the
+  retained doc re-drives convergence on restart. Claimed-only (subscribed
+  alongside `cmd`/`shadow`).
 
 ## State vocabulary (desired and reported share one shape)
 

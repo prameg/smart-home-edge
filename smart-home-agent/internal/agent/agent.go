@@ -26,6 +26,7 @@ import (
 	"github.com/smart-home/edge/agent/internal/ha"
 	"github.com/smart-home/edge/agent/internal/mqtt"
 	"github.com/smart-home/edge/agent/internal/provision"
+	"github.com/smart-home/edge/agent/internal/supervisor"
 	"github.com/smart-home/edge/agent/internal/webui"
 )
 
@@ -70,6 +71,16 @@ type Agent struct {
 	buffer   *uplinkBuffer
 	dedupe   *cmdDedupe
 
+	// sup drives the Supervisor API for cloud-orchestrated self-update; nil when
+	// the agent is not running inside HAOS (no SUPERVISOR_TOKEN). release tracks
+	// the release the agent has converged to; releaseMu/converging serialize the
+	// (slow, reboot-prone) convergence so overlapping retained redeliveries never
+	// double-run it.
+	sup        *supervisor.Client
+	release    *releaseStore
+	releaseMu  sync.Mutex
+	converging bool
+
 	// reconnect asks the run loop to cycle the broker connection (buffered,
 	// depth 1, coalesced). The manual re-provision path signals it after
 	// rotating the password so the run loop reconnects with the new credential;
@@ -113,10 +124,21 @@ func New(cfg *config.Config, log *slog.Logger, creds *provision.Credentials, haC
 		prov:       prov,
 		emap:       entitymap.Load(cfg.ConfigDir),
 		versions:   newVersionStore(cfg.DataDir),
+		release:    newReleaseStore(cfg.DataDir),
 		buffer:     newUplinkBuffer(uplinkBufferLimit),
 		dedupe:     newCmdDedupe(cmdDedupeLimit),
 		reconnect:  make(chan struct{}, 1),
 		configPath: configStatePath(cfg.DataDir),
+	}
+
+	// Inside HAOS the Supervisor injects a token; that (plus hassio_role:
+	// manager) is what lets the agent self-update to a cloud-pushed release.
+	// Outside HAOS (local dev) there is no token and release handling is inert.
+	if cfg.SupervisorToken != "" {
+		a.sup = supervisor.New(
+			&supervisor.HTTPTransport{BaseURL: cfg.SupervisorBaseURL, Token: cfg.SupervisorToken},
+			releaseCallTimeout, releaseInstallTimeout,
+		)
 	}
 
 	a.restoreConfigState()
@@ -360,10 +382,21 @@ func (a *Agent) activateClaimed(c *mqtt.Client) {
 		a.log.Error("subscribe shadow failed", "error", err)
 	}
 
+	// Cloud-orchestrated fleet updates: the retained target-release doc drives
+	// the agent's self-update. Claimed-only (matches the broker ACL), so it lives
+	// here rather than in the always-on config subscription.
+	if err := c.Subscribe(contract.ReleaseDesiredTopic(a.creds.UID), 1, a.handleRelease); err != nil {
+		a.log.Error("subscribe release failed", "error", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	a.publishInventory(ctx)
+
+	// Report the running software inventory + converged release so the cloud's
+	// gateway versions reflect what is actually running after any update/reboot.
+	a.publishVersions(ctx)
 
 	// Re-assert HA's current state for every mapped device so reported_state
 	// self-heals after a reconnect/restart. Off the callback goroutine: it does

@@ -113,7 +113,8 @@ func TestPrompterPick(t *testing.T) {
 
 func TestPromptMissingFillsUnsetValues(t *testing.T) {
 	// cloud URL, factory key, broker host (accept default), port (default),
-	// tls (default), username (default), owner password, country (default).
+	// tls (default), username (default), owner password, country (default),
+	// serial (typed override).
 	input := strings.Join([]string{
 		"https://app.example.com", // cloud base URL
 		"FK-123",                  // factory key
@@ -123,6 +124,7 @@ func TestPromptMissingFillsUnsetValues(t *testing.T) {
 		"",                        // username -> default admin
 		"s3cret",                  // owner password
 		"",                        // country -> default SA
+		"SN-9",                    // serial override
 	}, "\n") + "\n"
 
 	p := newPrompter(strings.NewReader(input), io.Discard)
@@ -153,6 +155,9 @@ func TestPromptMissingFillsUnsetValues(t *testing.T) {
 	if opts.country != "SA" {
 		t.Errorf("country default not kept: %q", opts.country)
 	}
+	if opts.serial != "SN-9" {
+		t.Errorf("serial override should be captured, got %q", opts.serial)
+	}
 }
 
 func TestPromptMissingSkipsProvidedAndEnvValues(t *testing.T) {
@@ -166,8 +171,8 @@ func TestPromptMissingSkipsProvidedAndEnvValues(t *testing.T) {
 
 	p := newPrompter(strings.NewReader(input), io.Discard)
 
-	opts := options{factoryKey: "from-env", mqttPort: 1884, mqttTLS: false, ownerUsername: "admin", country: "SA"}
-	provided := map[string]bool{"mqtt-port": true, "mqtt-tls": true, "owner-username": true, "country": true}
+	opts := options{factoryKey: "from-env", mqttPort: 1884, mqttTLS: false, ownerUsername: "admin", country: "SA", serial: "SN-flag"}
+	provided := map[string]bool{"mqtt-port": true, "mqtt-tls": true, "owner-username": true, "country": true, "serial": true}
 
 	if err := promptMissing(&opts, provided, p, io.Discard); err != nil {
 		t.Fatalf("promptMissing: %v", err)
@@ -175,6 +180,9 @@ func TestPromptMissingSkipsProvidedAndEnvValues(t *testing.T) {
 
 	if opts.factoryKey != "from-env" {
 		t.Errorf("an existing factory key must not be overwritten, got %q", opts.factoryKey)
+	}
+	if opts.serial != "SN-flag" {
+		t.Errorf("a flag-provided serial must not be re-asked, got %q", opts.serial)
 	}
 	if opts.mqttPort != 1884 || opts.mqttTLS {
 		t.Errorf("flag-provided broker settings must be left alone: %d %v", opts.mqttPort, opts.mqttTLS)

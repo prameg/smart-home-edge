@@ -15,9 +15,13 @@ RUN go mod download
 COPY . .
 
 # Static, CGO-free binary so it runs on the minimal Alpine base unchanged.
+# BUILD_VERSION is injected by the HA add-on builder from config.yaml `version`
+# (CI path); AGENT_VERSION is the fallback for a plain `docker build`. The stamp
+# is what the agent reports to the cloud and shows in the sidebar panel.
 ARG AGENT_VERSION=dev
+ARG BUILD_VERSION
 RUN CGO_ENABLED=0 go build \
-    -ldflags "-s -w -X github.com/smart-home/edge/agent/internal/config.AgentVersion=${AGENT_VERSION}" \
+    -ldflags "-s -w -X github.com/smart-home/edge/agent/internal/config.AgentVersion=${BUILD_VERSION:-${AGENT_VERSION}}" \
     -o /out/smart-home-agent .
 
 FROM ${BUILD_FROM}

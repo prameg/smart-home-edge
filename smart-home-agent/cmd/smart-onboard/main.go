@@ -371,6 +371,17 @@ func promptMissing(opts *options, provided map[string]bool, p *prompter, out io.
 		opts.country = v
 	}
 
+	// Serial is an optional override: blank means the agent auto-derives a
+	// stable hardware serial on the device (Pi CPU serial / hostname), which is
+	// the common case, so the prompt makes "leave blank" the obvious default.
+	if !provided["serial"] {
+		v, err := p.text("Gateway serial (blank = auto-derive on the device)", opts.serial)
+		if err != nil {
+			return err
+		}
+		opts.serial = v
+	}
+
 	_ = out
 
 	return nil
@@ -402,6 +413,7 @@ func confirmSummary(o options, p *prompter, out io.Writer) (bool, error) {
 	fmt.Fprintf(out, "  broker:   %s:%d (tls=%v)\n", o.mqttHost, o.mqttPort, o.mqttTLS)
 	fmt.Fprintf(out, "  owner:    %s\n", o.ownerUsername)
 	fmt.Fprintf(out, "  country:  %s\n", orNone(o.country))
+	fmt.Fprintf(out, "  serial:   %s\n", serialOrAuto(o.serial))
 	fmt.Fprintf(out, "  secrets:  factory key %s, owner password %s\n", masked(o.factoryKey), masked(o.ownerPassword))
 
 	return p.confirm("Proceed?", true)
@@ -473,6 +485,16 @@ func masked(secret string) string {
 func orNone(s string) string {
 	if s == "" {
 		return "(unset)"
+	}
+
+	return s
+}
+
+// serialOrAuto renders a serial override for the summary, making clear that a
+// blank value is not "missing" but "the agent derives it on the device".
+func serialOrAuto(s string) string {
+	if s == "" {
+		return "(auto-derived on the device)"
 	}
 
 	return s

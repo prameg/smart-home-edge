@@ -454,7 +454,7 @@ func TestUpdateCoreConfigEmptyIsNoop(t *testing.T) {
 }
 
 func TestClaimInfoFromLogs(t *testing.T) {
-	logs := `time=2026-07-06T10:00:00Z level=INFO msg=provisioned uid=9f8c2b10-0000-4a1b-9c3d-abcdef012345 claim_status=unclaimed mqtt_username=gw_x
+	logs := `time=2026-07-06T10:00:00Z level=INFO msg=provisioned uid=9f8c2b10-0000-4a1b-9c3d-abcdef012345 serial=pi-100000001234abcd claim_status=unclaimed mqtt_username=gw_x
 time=2026-07-06T10:00:01Z level=WARN msg="gateway is UNCLAIMED — enter this claim code to add it to a home" claim_code=WXYZ-2345`
 
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -470,6 +470,9 @@ time=2026-07-06T10:00:01Z level=WARN msg="gateway is UNCLAIMED — enter this cl
 	}
 	if info.UID != "9f8c2b10-0000-4a1b-9c3d-abcdef012345" {
 		t.Errorf("uid not parsed: %+v", info)
+	}
+	if info.Serial != "pi-100000001234abcd" {
+		t.Errorf("serial not parsed: %+v", info)
 	}
 	if info.Claimed {
 		t.Errorf("should be unclaimed: %+v", info)

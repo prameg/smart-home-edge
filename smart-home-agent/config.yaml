@@ -3,6 +3,13 @@
 name: Smart Home Agent
 version: "0.1.0"
 slug: smart_home_agent
+
+# Prebuilt image published by CI (.github/workflows/build.yaml) to GHCR, so
+# Supervisor pulls it instead of compiling the Go binary on-device. `{arch}` is
+# substituted by Supervisor per board (aarch64 on the Pi 5). The package is
+# PUBLIC, so gateways pull with no credentials. If this key is ever removed,
+# Supervisor falls back to an on-device build from the Dockerfile.
+image: ghcr.io/prameg/smart-home-edge/{arch}-smart_home_agent
 description: >-
   Bridges this Home Assistant instance to the smart-home cloud: self-provisions,
   connects to the cloud MQTT broker over TLS with a persistent session, and
@@ -18,6 +25,15 @@ arch:
 # The Supervisor injects SUPERVISOR_TOKEN and lets us reach Core at
 # http://supervisor/core/api and ws://supervisor/core/websocket.
 homeassistant_api: true
+
+# Cloud-orchestrated fleet updates: the agent drives the Supervisor add-on/OS/
+# Core update endpoints (http://supervisor/...) to converge to a target release
+# pushed by the cloud. That needs the Supervisor API plus the `manager` role
+# (install/update/restart add-ons + OS/Core updates); `homeassistant_api` alone
+# only grants Core's API, not Supervisor management. See internal/supervisor and
+# internal/agent/release.go.
+hassio_api: true
+hassio_role: manager
 
 # The agent only makes OUTBOUND connections (cloud HTTP + broker); the default
 # bridge network already gives it DNS + egress, so no host networking and no

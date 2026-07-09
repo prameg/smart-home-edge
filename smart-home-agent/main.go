@@ -58,6 +58,7 @@ func run() error {
 
 	log.Info("provisioned",
 		"uid", creds.UID,
+		"serial", creds.Serial,
 		"claim_status", creds.ClaimStatus,
 		"mqtt_username", creds.MQTTUsername,
 	)

@@ -165,6 +165,15 @@ persistent notification, or the agent add-on log.
 > `ha addons`), fill in `release.json`, set `populated: true`, and tag it — see
 > [`fleet-release.md`](fleet-release.md).
 
+> **After onboarding, updates are cloud-orchestrated.** `smart-onboard` applies a
+> release only at bring-up; shipping a *newer* version to an already-onboarded
+> gateway is done from the cloud, not by re-running the CLI. The agent add-on has
+> `hassio_api: true` + `hassio_role: manager` so it can drive `/addons`, `/store`,
+> `/os`, `/core` itself: it subscribes to the retained `homes/{uid}/release/desired`
+> doc the cloud publishes when you assign a target release on the **/gateways**
+> fleet page, converges (self-update last), and reports back on
+> `homes/{uid}/versions`. Full flow in [`fleet-release.md`](fleet-release.md).
+
 ---
 
 ## 3. Claim the gateway in the cloud
