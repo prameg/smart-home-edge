@@ -3,6 +3,13 @@
 # ${CLOUD_PORT}, ${SMART_HOME_BROKER_AUTH_SECRET}) into the live config, so the
 # secret + cloud host never live in a committed file.
 
+# Run as root inside this single-purpose container so Mosquitto can read the
+# root-owned TLS key. Without this, Mosquitto drops privileges to the `mosquitto`
+# user on startup, which cannot fopen() the `0640 root:root` server.key synced
+# from /etc/nginx/ssl (-> "Unable to load server key file: Permission denied").
+# The alternative — world-readable the private key — is a worse trade-off.
+user root
+
 persistence true
 persistence_location /mosquitto/data/
 log_dest stdout
