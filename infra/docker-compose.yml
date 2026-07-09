@@ -23,32 +23,19 @@ services:
       SMART_HOME_BROKER_AUTH_SECRET: ${SMART_HOME_BROKER_AUTH_SECRET}
     volumes:
       - ./mosquitto/mosquitto.conf.template:/mosquitto/config/mosquitto.conf.template:ro
+      - ./mosquitto/render-and-run.sh:/render-and-run.sh:ro
       # Stable host dir kept in sync with the Let's Encrypt cert by the host
       # renewal hook (see infra/README.md). NOT Forge's numbered
       # /etc/nginx/ssl/<domain>/<id> path, which changes on every renewal and
       # would move the mount out from under the container.
       - /opt/mosquitto/certs:/mosquitto/certs:ro
       - mosquitto-data:/mosquitto/data
-    # Render the config from the template (envsubst) then exec mosquitto. This
-    # keeps the secret + host out of the committed config file.
-    #
-    # `set -e` + the non-empty check are load-bearing: the go-auth image is
-    # Debian-based, so a wrong package manager (or a failed render) used to leave
-    # a 0-byte mosquitto.conf behind — the `>` redirect truncates the file before
-    # envsubst runs — and mosquitto would silently fall back to its default
-    # LOCAL-ONLY config (no 8883, no auth), so the cloud/gateways timed out.
-    # Fail hard instead of booting a misconfigured broker.
-    entrypoint:
-      - /bin/sh
-      - -c
-      - >-
-        set -e;
-        command -v envsubst >/dev/null 2>&1
-        || (apt-get update && apt-get install -y --no-install-recommends gettext-base)
-        || apk add --no-cache gettext;
-        envsubst < /mosquitto/config/mosquitto.conf.template > /mosquitto/config/mosquitto.conf;
-        test -s /mosquitto/config/mosquitto.conf;
-        exec mosquitto -c /mosquitto/config/mosquitto.conf
+    # Render the secret + cloud host into mosquitto.conf, then exec mosquitto.
+    # The render (sed, no envsubst/no package install) + its fail-hard guards
+    # live in render-and-run.sh (see that script for the why); this keeps the
+    # secret out of the committed config file without a misconfigured broker ever
+    # falling back to Mosquitto's default LOCAL-ONLY mode.
+    entrypoint: ["/bin/sh", "/render-and-run.sh"]
 
 volumes:
   mosquitto-data:
