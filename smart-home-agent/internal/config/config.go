@@ -38,8 +38,8 @@ type Config struct {
 	// "supervisor" and the token is injected; overridable for local dev.
 	SupervisorToken string
 	HARestBaseURL   string // e.g. http://supervisor/core/api
-	// SupervisorBaseURL is the Supervisor REST root the agent uses to self-update
-	// to a cloud-pushed release (add-on/OS/Core management). In an add-on it is
+	// SupervisorBaseURL is the Supervisor REST root the agent uses to bring the
+	// unit to the latest (add-on/OS/Core management). In an add-on it is
 	// "http://supervisor"; overridable for local dev / tests.
 	SupervisorBaseURL string
 	HAWebsocketURL    string // e.g. ws://supervisor/core/websocket

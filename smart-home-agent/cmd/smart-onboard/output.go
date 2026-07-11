@@ -69,11 +69,7 @@ func printHeader(w io.Writer, opts options, m *fleet.Manifest) {
 	fmt.Fprintf(w, "  device:  %s\n", opts.host)
 	fmt.Fprintf(w, "  cloud:   %s\n", opts.cloudBaseURL)
 	fmt.Fprintf(w, "  broker:  %s:%d (tls=%v)\n", opts.mqttHost, opts.mqttPort, opts.mqttTLS)
-	fmt.Fprintf(w, "  release: %s", m.ReleaseID)
-	if !m.Populated {
-		fmt.Fprint(w, " (template — installing latest, versions not pinned)")
-	}
-	fmt.Fprintln(w)
+	fmt.Fprintf(w, "  addons:  %d (latest; auto-updated by the agent + HA)\n", len(m.Addons))
 }
 
 // printDone renders the final screen: the provisioned identity and, while

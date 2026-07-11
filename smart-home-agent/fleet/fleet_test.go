@@ -6,17 +6,17 @@ import (
 	"testing"
 )
 
-// The embedded default manifest must parse and satisfy the invariants the CLI
-// relies on — a broken release.json should fail the build's tests, not a unit
-// in the field.
+// The embedded default bootstrap set must parse and satisfy the invariants the
+// CLI relies on — a broken release.json should fail the build's tests, not a
+// unit in the field.
 func TestDefaultManifestValid(t *testing.T) {
 	m, err := Default()
 	if err != nil {
 		t.Fatalf("Default: %v", err)
 	}
 
-	if m.ReleaseID == "" {
-		t.Error("embedded manifest has no release_id")
+	if m.AddonRepository == "" {
+		t.Error("embedded manifest has no addon_repository")
 	}
 
 	if m.Agent() == nil {
@@ -35,16 +35,14 @@ func TestLoadOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(\"\"): %v", err)
 	}
-	if def.ReleaseID == "" {
+	if def.AddonRepository == "" {
 		t.Error("empty path should return the embedded default")
 	}
 
 	path := filepath.Join(t.TempDir(), "candidate.json")
 	if err := os.WriteFile(path, []byte(`{
-		"release_id": "test-r9",
-		"populated": true,
 		"addon_repository": "https://example.test/repo",
-		"addons": [{"name": "Agent", "match": "smart_home_agent", "version": "9.9.9"}]
+		"addons": [{"name": "Agent", "match": "smart_home_agent"}]
 	}`), 0o600); err != nil {
 		t.Fatalf("write candidate: %v", err)
 	}
@@ -54,12 +52,12 @@ func TestLoadOverride(t *testing.T) {
 		t.Fatalf("Load(path): %v", err)
 	}
 
-	if m.ReleaseID != "test-r9" || !m.Populated {
+	if m.AddonRepository != "https://example.test/repo" {
 		t.Errorf("override not loaded: %+v", m)
 	}
 
-	if !m.Agent().Pinned() || m.Agent().Version != "9.9.9" {
-		t.Errorf("agent version not parsed: %+v", m.Agent())
+	if m.Agent() == nil || m.Agent().Match != "smart_home_agent" {
+		t.Errorf("agent add-on not parsed: %+v", m.Agent())
 	}
 }
 
@@ -67,21 +65,14 @@ func TestLoadOverride(t *testing.T) {
 // without.
 func TestValidateRejectsIncomplete(t *testing.T) {
 	cases := map[string]Manifest{
-		"no release id": {
-			AddonRepository: "https://x.test",
-			Addons:          []Addon{{Match: "smart_home_agent"}},
-		},
 		"no repository": {
-			ReleaseID: "r1",
-			Addons:    []Addon{{Match: "smart_home_agent"}},
+			Addons: []Addon{{Match: "smart_home_agent"}},
 		},
 		"no agent add-on": {
-			ReleaseID:       "r1",
 			AddonRepository: "https://x.test",
 			Addons:          []Addon{{Match: "mosquitto", Slug: "core_mosquitto"}},
 		},
 		"addon without match or slug": {
-			ReleaseID:       "r1",
 			AddonRepository: "https://x.test",
 			Addons:          []Addon{{Name: "broken"}, {Match: "smart_home_agent"}},
 		},

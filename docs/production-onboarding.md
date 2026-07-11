@@ -148,31 +148,31 @@ now.)
 | `connect` | Wait for HA Core to be usably up (bounded by `--wait-core`, default 10m). |
 | `owner-and-token` | Create the HA owner (or log in on a re-run), mint a long-lived token, set country/time zone. |
 | `addon-repository` | Add `https://github.com/prameg/smart-home-edge` to the add-on store. |
-| `install-addons` | Install agent + Mosquitto + Zigbee2MQTT + Matter Server (versions from the fleet manifest). |
+| `install-addons` | Install agent + Mosquitto + Zigbee2MQTT + Matter Server at **latest** (the version-free bootstrap set; no pinning). |
 | `configure-agent` | Set the agent's `cloud_base_url`, `factory_key`, `mqtt_*` options. |
 | `start-agent` | Start the agent add-on. |
 | `await-provision` | Wait for the agent to provision and read back `uid` + **claim code** (bounded by `--wait-provision`, default 5m). |
-| `pin-release` | Pin OS/Core/add-on versions — **skipped** while the fleet manifest is a template (see note). |
 
 **Done screen** prints the `uid`, serial, and the **claim code** (`XXXX-XXXX`).
 You can also read the code from the HA **Smart Home** sidebar panel, an HA
 persistent notification, or the agent add-on log.
 
-> **Fleet manifest is currently a template.** `smart-home-agent/fleet/release.json`
-> has `populated: false`, so `smart-onboard` installs the **latest** add-ons and
-> **skips version pinning** (it warns, doesn't fail). To cut a pinned release,
-> capture versions from the bring-up unit (`ha os info` / `ha core info` /
-> `ha addons`), fill in `release.json`, set `populated: true`, and tag it — see
-> [`fleet-release.md`](fleet-release.md).
+> **The CLI never pins versions.** `smart-onboard` installs the version-free
+> bootstrap add-on set (`smart-home-agent/fleet/release.json` — repo + slugs, no
+> versions) so the unit can start the agent and enroll. Everything then runs the
+> latest: the agent enables HA-native `auto_update` and its `updateAll` engine
+> keeps agent/HAOS/Core/add-ons current. See
+> [`fleet-update.md`](fleet-update.md).
 
-> **After onboarding, updates are cloud-orchestrated.** `smart-onboard` applies a
-> release only at bring-up; shipping a *newer* version to an already-onboarded
-> gateway is done from the cloud, not by re-running the CLI. The agent add-on has
-> `hassio_api: true` + `hassio_role: manager` so it can drive `/addons`, `/store`,
-> `/os`, `/core` itself: it subscribes to the retained `homes/{uid}/release/desired`
-> doc the cloud publishes when you assign a target release on the **/gateways**
-> fleet page, converges (self-update last), and reports back on
-> `homes/{uid}/versions`. Full flow in [`fleet-release.md`](fleet-release.md).
+> **Updates are latest-everywhere, no pinning.** After onboarding the unit keeps
+> itself current with no admin action: HA `auto_update` handles add-ons, and the
+> agent's daily self-check (and on-boot pass) drives HAOS/Core forward. Pushing an
+> update *now* to already-claimed units is a per-row or bulk **Update** button on
+> **/gateways** — never a CLI re-run. The agent add-on has `hassio_api: true` +
+> `hassio_role: manager` so it can drive `/addons`, `/store`, `/os`, `/core`
+> itself: on a `homes/{uid}/update` command (or its own tick) it brings everything
+> to latest (self-update last), and reports progress on `homes/{uid}/update/status`
+> + `homes/{uid}/versions`. Full flow in [`fleet-update.md`](fleet-update.md).
 
 ---
 

@@ -10,6 +10,13 @@ most maintainability. This was the least-proven piece of Phase 2; it is now
 > (`smart.prameg.net` + `mqtt.prameg.net`). This doc is the decision + generic
 > reference behind it.
 
+> **CLI vs golden image.** The `smart-onboard` CLI is the **bring-up + fallback**
+> path — cutting the reference unit for the golden image, non-imaged hardware,
+> and mid-flash recovery. The **primary** field path is the pre-baked golden
+> image (flash → boot → claim, no CLI): see [`golden-image.md`](golden-image.md).
+> Both reach the same provisioned end state; the vocabulary tying them together
+> is in [`gateway-lifecycle.md`](gateway-lifecycle.md).
+
 ## What "onboarded" means
 
 A gateway is field-ready when, from first boot, it can:
@@ -20,13 +27,14 @@ A gateway is field-ready when, from first boot, it can:
 3. Surface its short **claim code** (in the agent log + an HA persistent
    notification) for the installer/end-user to bind it to a home.
 
-Everything after that is the agent (this repo) + the pinned add-ons.
+Everything after that is the agent (this repo) + the managed add-ons, all kept
+at latest.
 
 ## Decision
 
 > **GO: stock Home Assistant OS + a resumable onboarding CLI
 > (`smart-onboard`).** Flash stock HAOS onto the gateway, then drive the rest —
-> owner creation, add-on repository, pinned add-on installs, agent
+> owner creation, add-on repository, add-on installs (at latest), agent
 > configuration, start, and reading back the claim code — over Home Assistant's
 > **stable public APIs** (the onboarding + auth REST API and the Supervisor API,
 > reached through Core's authenticated `supervisor/api` WebSocket command — the
@@ -38,12 +46,11 @@ The rationale is robustness through **resumability over stable contracts**:
 
 - **Stable contracts, not `.storage` hacks.** The onboarding/auth APIs and the
   `supervisor/api` WebSocket command are the same ones the official HA frontend
-  uses. We re-validate them once per pinned Core version when we cut a fleet
-  release, but they do not shift release-to-release the way the internal
-  `.storage` layout does. (This surface *does* move occasionally: HA locked the
-  `/api/hassio` REST proxy down to an allowlist — backups/logs only — so general
-  Supervisor calls moved to `supervisor/api`. That is exactly the per-release
-  re-validation this section calls for.)
+  uses. We re-validate them once per HA Core baseline, but they do not shift the
+  way the internal `.storage` layout does. (This surface *does* move
+  occasionally: HA locked the `/api/hassio` REST proxy down to an allowlist —
+  backups/logs only — so general Supervisor calls moved to `supervisor/api`. That
+  is exactly the per-Core-version re-validation this section calls for.)
 - **Resumable state machine.** Each step is `check → act → verify`, and the
   source of truth for "is this done?" is the **device itself**, queried fresh at
   the start of every step — not a local progress file. A run that dies halfway
@@ -52,7 +59,9 @@ The rationale is robustness through **resumability over stable contracts**:
   resumes at the first unfinished one. This is the "interactive failover /
   recoverable steps" property we wanted.
 - **Stays on the supported update path.** OS/Core/add-ons update the normal HAOS
-  way; the fleet-release manifest then pins them.
+  way; the agent enables HA-native `auto_update` and drives the Supervisor update
+  endpoints for HAOS/Core on a daily self-check or an on-demand fleet **Update**
+  (see [`fleet-update.md`](fleet-update.md)).
 
 ### Options that were rejected
 
@@ -70,8 +79,8 @@ The rationale is robustness through **resumability over stable contracts**:
   Building a fleet on it would mean owning an abandoned install method. **The
   gateway is therefore always HAOS.**
 - **HA Container (plain Docker)** — excluded by product decision (no Supervisor
-  means no add-on management / `homeassistant_api: true`, which Phase 4 fleet
-  rollout leans on).
+  means no add-on management / `homeassistant_api: true`, which the agent's fleet
+  updates lean on).
 - **Custom buildroot / HAOS image** — deferred until fleet scale justifies a
   build pipeline; it diverges from stock HAOS and rebuilds on every OS bump.
 
@@ -91,7 +100,7 @@ node next to the Pi**:
 This keeps every box on a vendor-supported OS. It is **Phase 4 roadmap work**
 (Jetson runtime package, its MQTT entity contract, extending the cloud device
 allow-list beyond actuator domains to `binary_sensor`/`sensor`/`event`, JetPack +
-model pinning in the fleet manifest, and a `curl https://smart.test/ha/sh | sh`
+model management for the Jetson node, and a `curl https://smart.test/ha/sh | sh`
 plain-Linux node installer) — recorded here as the direction, **not built yet**.
 
 ## Operator runbook
@@ -139,8 +148,11 @@ plain-Linux node installer) — recorded here as the direction, **not built yet*
    ```
 
    Secrets can come from flags, from env (`SMART_ONBOARD_FACTORY_KEY`,
-   `SMART_ONBOARD_OWNER_PASSWORD`), or interactively. The factory key is entered
-   into the CLI — it is never baked into an image or a script.
+   `SMART_ONBOARD_OWNER_PASSWORD`), or interactively. On the **CLI** path the
+   factory key is entered per run, never baked into a script. (The **golden
+   image** path is different by design: it bakes the factory key into the image
+   so field onboarding is flash → boot → claim — see
+   [`golden-image.md`](golden-image.md).)
 4. **Read the claim code** off the final screen and enter it in the Smart Home
    app to bind the gateway to a home.
 
@@ -162,8 +174,12 @@ needs no prompts — one binary, two entry points:
   `guest:8123` onto the host's loopback — is invisible to mDNS (its announcement
   carries the guest's internal IP, not `127.0.0.1`). `--dev` additionally probes
   the well-known local URLs (`http://127.0.0.1:8123`, `http://homeassistant.local:8123`),
-  defaults the host to `127.0.0.1:8123`, and defaults the broker to plaintext
-  (`--mqtt-tls=false`) — the usual local-broker setup. Production runs omit it.
+  defaults the host to `127.0.0.1:8123`, defaults the broker to plaintext
+  (`--mqtt-tls=false`), and defaults `cloud_base_url` / `mqtt_host` to the
+  VirtualBox NAT host `10.0.2.2` (matching `scripts/sync-addon-to-vm.sh`) — the
+  usual local setup. It also **skips** the store agent add-on in `install-addons`:
+  you install the agent from your **local checkout** out-of-band with
+  `scripts/sync-addon-to-vm.sh` (see below). Production runs omit it.
 - **Guided prompts with defaults.** With a terminal attached and no `--yes`, any
   value not passed by flag (and not already in the environment, for secrets) is
   prompted with its default in brackets — enter accepts it. The broker host
@@ -223,20 +239,55 @@ needs no prompts — one binary, two entry points:
 | `connect` | Wait for Core's API to answer (bounded by `--wait-core`). |
 | `owner-and-token` | Create the HA owner (or log in on a re-run), mint a long-lived token (re-run-safe: the previous run's token is purged first, since HA refuses a duplicate), and set core config (country/time zone) so the device isn't left warning about missing location. |
 | `addon-repository` | Register this repo (and any community add-on repos) in the add-on store. |
-| `install-addons` | Install the manifest's add-ons (agent + Mosquitto + Zigbee2MQTT + Matter Server), pinning versions when the release is populated. |
+| `install-addons` | Install the bootstrap add-ons (agent + Mosquitto + Zigbee2MQTT + Matter Server) at **latest**. In `--dev` mode the agent add-on is **skipped** — you install it from the local checkout via `scripts/sync-addon-to-vm.sh` (see below); the step only checks it is present. |
 | `configure-agent` | Set the agent add-on options (`cloud_base_url`, `factory_key`, `mqtt_*`). |
 | `start-agent` | Start the agent add-on. |
 | `await-provision` | Wait for the agent to provision (bounded by `--wait-provision`) and read back the `uid` + claim code. |
-| `pin-release` | Disable add-on auto-update and converge OS/Core to pinned versions (no-op on a template release). |
 
-The exact versions the CLI installs/pins come from the fleet manifest
-(`smart-home-agent/fleet/release.json`, the machine-readable twin of
-[`fleet-release.md`](fleet-release.md)); override it for testing with
-`--manifest`.
+The CLI installs the **version-free bootstrap add-on set** from
+`smart-home-agent/fleet/release.json` (repo + slugs, no versions; override for
+testing with `--manifest`). There is no version pinning: the agent enables
+HA-native `auto_update` on the add-ons it manages and its `updateAll` engine
+keeps agent/HAOS/Core/add-ons on the latest via a daily self-check or an
+on-demand fleet **Update**. See [`fleet-update.md`](fleet-update.md).
 
-## Contract re-validation (per pinned release)
+## Local agent dev flow (`--dev`)
 
-Record the outcome when cutting a fleet release on the bring-up unit:
+For iterating on the agent against a local HA VM without publishing a GHCR image
+every time, the agent add-on is installed from your **local checkout** by
+`scripts/sync-addon-to-vm.sh` (which serves the source + Laravel to the VM), and
+`--dev` wires `smart-onboard` around that.
+
+**How it fits together.** `smart-onboard --dev` does **not** deliver the add-on
+source itself — it drives everything else and hands the agent add-on off to the
+sync script:
+
+1. **Host side — serve the source + cloud.** Run `scripts/sync-addon-to-vm.sh
+   serve`: it builds `dist/smart-home-agent.tgz`, serves it on `0.0.0.0:8765`,
+   starts Laravel on `0.0.0.0:8090`, and prints the `curl` one-liner + the
+   `cloud_base_url` / `mqtt_host` values.
+2. **Install the local add-on in HA.** In the HA terminal, `curl` the tarball
+   into `/addons` and extract it, then Settings → Add-ons → Add-on store → ⋮ →
+   **Check for updates** → Local add-ons → **Smart Home Agent** → **Install**.
+   Supervisor builds it locally as `local_smart_home_agent`.
+3. **Run `smart-onboard --dev`.** The `install-addons` step **skips** the store
+   agent (printing the reminder above) and only checks `local_smart_home_agent`
+   is present — if it isn't yet, the step fails with that guidance, and because
+   the run is resumable you just install it and re-run. Other add-ons
+   (Mosquitto, Zigbee2MQTT, Matter) still install from the store at latest. The
+   `configure-agent` / `start-agent` / `await-provision` steps then run against
+   the local add-on, defaulting `cloud_base_url` to `http://10.0.2.2:8090` and
+   `mqtt_host` to `10.0.2.2` (override with `--cloud-base-url` / `--mqtt-host`).
+
+**Iterating on agent code.** Re-run `scripts/sync-addon-to-vm.sh` to rebuild the
+tarball, re-drop it in the HA terminal, then rebuild + restart the local add-on
+(`ha addons rebuild local_smart_home_agent && ha addons restart
+local_smart_home_agent`). See [`local-testing.md`](local-testing.md) Track 3.
+
+## Contract re-validation (per Core version)
+
+Re-validate these once per new HA Core baseline on the bring-up unit — the HA
+surfaces the CLI and agent drive move occasionally, so record the outcome:
 
 | Question | Finding |
 | -------- | ------- |
@@ -244,4 +295,4 @@ Record the outcome when cutting a fleet release on the bring-up unit:
 | `supervisor/api` WS command still serves store/add-on/OS/Core calls (and `/api/hassio` still allows add-on logs)? | |
 | Full-slug resolution for the community add-ons (repo-hash prefix) | |
 | Claim code read back from add-on log / persistent notification | |
-| Add-on / OS / Core versions pinned (populate `release.json`) | |
+| Agent `updateAll` brings add-ons/OS/Core to latest + enables `auto_update` | |

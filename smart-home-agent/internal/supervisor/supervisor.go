@@ -3,12 +3,12 @@
 // (which reaches Supervisor through Core's authenticated "supervisor/api"
 // WebSocket command from a companion machine) and the agent add-on itself
 // (which reaches Supervisor directly over http://supervisor with its injected
-// SUPERVISOR_TOKEN, to self-update to a cloud-pushed release).
+// SUPERVISOR_TOKEN, to update itself and the unit to the latest available).
 //
 // The two callers differ only in TRANSPORT (WS-via-Core vs direct HTTP), so the
 // transport is an interface and every endpoint path / payload shape / result
 // parse lives here exactly once. That is the whole point: onboarding and fleet
-// rollout drive Supervisor through one code path, so a Supervisor API change is
+// updates drive Supervisor through one code path, so a Supervisor API change is
 // fixed in one place and can never drift between the CLI and the agent.
 package supervisor
 
@@ -53,6 +53,9 @@ type AddonInfo struct {
 	State string
 	// AutoUpdate is the current auto-update flag.
 	AutoUpdate bool
+	// UpdateAvailable reports whether Supervisor has a newer version than the
+	// installed one, so the agent can update-to-latest only when it matters.
+	UpdateAvailable bool
 	// Options is the add-on's current user options, used to skip a redundant
 	// re-write when the desired options already match.
 	Options map[string]any
@@ -161,22 +164,24 @@ func (c *Client) AddonInfo(ctx context.Context, slug string) (AddonInfo, error) 
 	}
 
 	var info struct {
-		Version    string         `json:"version"`
-		State      string         `json:"state"`
-		AutoUpdate bool           `json:"auto_update"`
-		Options    map[string]any `json:"options"`
+		Version         string         `json:"version"`
+		State           string         `json:"state"`
+		AutoUpdate      bool           `json:"auto_update"`
+		UpdateAvailable bool           `json:"update_available"`
+		Options         map[string]any `json:"options"`
 	}
 	if err := json.Unmarshal(data, &info); err != nil {
 		return AddonInfo{}, fmt.Errorf("addon info %q: decode: %w", slug, err)
 	}
 
 	return AddonInfo{
-		Slug:       slug,
-		Installed:  info.Version != "",
-		Version:    info.Version,
-		State:      info.State,
-		AutoUpdate: info.AutoUpdate,
-		Options:    info.Options,
+		Slug:            slug,
+		Installed:       info.Version != "",
+		Version:         info.Version,
+		State:           info.State,
+		AutoUpdate:      info.AutoUpdate,
+		UpdateAvailable: info.UpdateAvailable,
+		Options:         info.Options,
 	}, nil
 }
 
@@ -185,9 +190,10 @@ func (c *Client) InstallAddon(ctx context.Context, slug string) error {
 	return c.addonMutate(ctx, slug, "install", nil)
 }
 
-// UpdateAddon moves an installed add-on to a specific version.
-func (c *Client) UpdateAddon(ctx context.Context, slug, version string) error {
-	return c.addonMutate(ctx, slug, "update", map[string]string{"version": version})
+// UpdateAddonLatest updates an installed add-on to the latest available version
+// (Supervisor picks it when no version is supplied).
+func (c *Client) UpdateAddonLatest(ctx context.Context, slug string) error {
+	return c.addonMutate(ctx, slug, "update", nil)
 }
 
 // addonMutate posts an install/update, trying the /store/addons form first then
@@ -269,18 +275,18 @@ func (c *Client) versionInfo(ctx context.Context, path string) (VersionInfo, err
 	return VersionInfo{Version: info.Version, Latest: info.Latest}, nil
 }
 
-// UpdateOS converges Home Assistant OS to a version (slow: forwards
-// installTimeout server-side).
-func (c *Client) UpdateOS(ctx context.Context, version string) error {
-	_, err := c.t.Call(ctx, "post", "/os/update", map[string]string{"version": version}, c.installTimeout)
+// UpdateOSLatest updates Home Assistant OS to the latest available version
+// (slow: forwards installTimeout server-side; reboots the unit).
+func (c *Client) UpdateOSLatest(ctx context.Context) error {
+	_, err := c.t.Call(ctx, "post", "/os/update", nil, c.installTimeout)
 
 	return err
 }
 
-// UpdateCore converges Home Assistant Core to a version (slow: forwards
-// installTimeout server-side).
-func (c *Client) UpdateCore(ctx context.Context, version string) error {
-	_, err := c.t.Call(ctx, "post", "/core/update", map[string]string{"version": version}, c.installTimeout)
+// UpdateCoreLatest updates Home Assistant Core to the latest available version
+// (slow: forwards installTimeout server-side; restarts Core).
+func (c *Client) UpdateCoreLatest(ctx context.Context) error {
+	_, err := c.t.Call(ctx, "post", "/core/update", nil, c.installTimeout)
 
 	return err
 }

@@ -62,25 +62,14 @@ type DeviceAPI interface {
 	AddonInfo(ctx context.Context, slug string) (AddonInfo, error)
 	// InstallAddon installs an add-on (latest available version).
 	InstallAddon(ctx context.Context, slug string) error
-	// UpdateAddon moves an installed add-on to a specific version (used to pin).
-	UpdateAddon(ctx context.Context, slug, version string) error
 	// SetAddonOptions writes an add-on's user options (the add-on's config.yaml
 	// schema keys).
 	SetAddonOptions(ctx context.Context, slug string, options map[string]any) error
-	// SetAddonAutoUpdate toggles an add-on's auto-update flag (pinned = off).
-	SetAddonAutoUpdate(ctx context.Context, slug string, enabled bool) error
 	// StartAddon starts an installed add-on.
 	StartAddon(ctx context.Context, slug string) error
 	// RestartAddon restarts an installed add-on so option changes written while
 	// it was running take effect (HA loads add-on options only at start).
 	RestartAddon(ctx context.Context, slug string) error
-
-	// OSInfo / CoreInfo report the running OS / Core versions.
-	OSInfo(ctx context.Context) (VersionInfo, error)
-	CoreInfo(ctx context.Context) (VersionInfo, error)
-	// UpdateOS / UpdateCore converge OS / Core to a pinned version.
-	UpdateOS(ctx context.Context, version string) error
-	UpdateCore(ctx context.Context, version string) error
 
 	// ClaimInfo reads the agent's provisioned identity and short claim code by
 	// inspecting the agent add-on (its logs, falling back to the HA persistent
@@ -101,10 +90,6 @@ type OnboardingStatus struct {
 // the shared supervisor package's type so the onboarding steps and the agent's
 // self-update path speak one shape.
 type AddonInfo = supervisor.AddonInfo
-
-// VersionInfo is a running-vs-latest version pair for OS / Core (aliased to the
-// shared supervisor type).
-type VersionInfo = supervisor.VersionInfo
 
 // ClaimInfo is what the agent surfaces once it has provisioned: its cloud uid,
 // the hardware serial it enrolled under (auto-derived on the device unless the
@@ -187,6 +172,12 @@ type State struct {
 	CoreConfig   CoreConfig
 	AgentOptions map[string]any
 	Timeouts     Timeouts
+
+	// Dev switches the run to developer mode: the install-addons step SKIPS the
+	// agent add-on (the developer installs it from their local checkout via
+	// scripts/sync-addon-to-vm.sh) and the agent slug resolves to the local
+	// add-on. The other add-ons still install from the store at latest.
+	Dev bool
 
 	// Accumulated during the run.
 	AccessToken string

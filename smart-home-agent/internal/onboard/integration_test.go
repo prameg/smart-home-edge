@@ -212,7 +212,7 @@ func (m *mockHA) supervisorDispatch(endpoint, method string, data json.RawMessag
 		return nil, nil
 
 	default:
-		// Tolerate unmodeled calls (e.g. /addons/{slug}/update on a pinned run).
+		// Tolerate unmodeled calls (e.g. /addons/{slug}/update to latest).
 		return nil, nil
 	}
 }
@@ -264,7 +264,6 @@ func runFullOnboarding(t *testing.T, baseURL string) *State {
 
 func e2eManifest() *fleet.Manifest {
 	return &fleet.Manifest{
-		ReleaseID:       "e2e",
 		AddonRepository: "https://example.test/edge-repo",
 		Addons: []fleet.Addon{
 			{Name: "Smart Home Agent", Match: "smart_home_agent", Repository: "https://example.test/edge-repo"},

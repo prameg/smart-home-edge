@@ -533,7 +533,7 @@ const supervisorCallTimeout = 90 * time.Second
 // Call implements supervisor.Transport: it reaches a Supervisor REST endpoint
 // through Core's authenticated "supervisor/api" WebSocket command. This is the
 // WS half of the shared Supervisor operations (the agent add-on supplies a
-// direct-HTTP half), so onboarding and fleet rollout drive Supervisor through
+// direct-HTTP half), so onboarding and fleet updates drive Supervisor through
 // one code path in internal/supervisor.
 func (c *Client) Call(ctx context.Context, method, endpoint string, payload any, timeout time.Duration) (json.RawMessage, error) {
 	return c.supervisorAPI(ctx, method, endpoint, payload, timeout)
@@ -661,19 +661,9 @@ func (c *Client) InstallAddon(ctx context.Context, slug string) error {
 	return c.sup.InstallAddon(ctx, slug)
 }
 
-// UpdateAddon moves an installed add-on to a specific version (used to pin).
-func (c *Client) UpdateAddon(ctx context.Context, slug, version string) error {
-	return c.sup.UpdateAddon(ctx, slug, version)
-}
-
 // SetAddonOptions writes an add-on's user options.
 func (c *Client) SetAddonOptions(ctx context.Context, slug string, options map[string]any) error {
 	return c.sup.SetAddonOptions(ctx, slug, options)
-}
-
-// SetAddonAutoUpdate toggles an add-on's auto-update flag.
-func (c *Client) SetAddonAutoUpdate(ctx context.Context, slug string, enabled bool) error {
-	return c.sup.SetAddonAutoUpdate(ctx, slug, enabled)
 }
 
 // StartAddon starts an installed add-on.
@@ -685,26 +675,6 @@ func (c *Client) StartAddon(ctx context.Context, slug string) error {
 // was running take effect (HA loads add-on options only at start).
 func (c *Client) RestartAddon(ctx context.Context, slug string) error {
 	return c.sup.RestartAddon(ctx, slug)
-}
-
-// OSInfo reports the running vs latest Home Assistant OS version.
-func (c *Client) OSInfo(ctx context.Context) (VersionInfo, error) {
-	return c.sup.OSInfo(ctx)
-}
-
-// CoreInfo reports the running vs latest Home Assistant Core version.
-func (c *Client) CoreInfo(ctx context.Context) (VersionInfo, error) {
-	return c.sup.CoreInfo(ctx)
-}
-
-// UpdateOS converges Home Assistant OS to a version.
-func (c *Client) UpdateOS(ctx context.Context, version string) error {
-	return c.sup.UpdateOS(ctx, version)
-}
-
-// UpdateCore converges Home Assistant Core to a version.
-func (c *Client) UpdateCore(ctx context.Context, version string) error {
-	return c.sup.UpdateCore(ctx, version)
 }
 
 // ClaimInfo reads the agent's identity + claim code from its add-on log stream,

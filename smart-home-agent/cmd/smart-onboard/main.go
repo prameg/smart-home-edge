@@ -26,6 +26,20 @@
 //
 // Secrets can be supplied by flag, by environment variable
 // (SMART_ONBOARD_FACTORY_KEY, SMART_ONBOARD_OWNER_PASSWORD), or interactively.
+//
+// Developer flow: with --dev the install-addons step SKIPS the agent add-on —
+// you install it from your local checkout out-of-band with
+// scripts/sync-addon-to-vm.sh (which serves the source + Laravel), then add it
+// in the Home Assistant UI as local_smart_home_agent. smart-onboard then
+// configures/starts it and waits for the claim code. --dev also finds a local
+// HA (a VM mDNS can't see), defaults cloud_base_url/mqtt_host to the VirtualBox
+// NAT host (10.0.2.2, matching scripts/sync-addon-to-vm.sh), and defaults the
+// broker to plaintext, so no addressing flags are needed:
+//
+//	# Terminal 1 (host): serve the add-on source + Laravel to the VM
+//	./scripts/sync-addon-to-vm.sh serve
+//	# then install the local add-on in the HA UI, and:
+//	smart-onboard --dev --factory-key <key> --owner-password <pw>
 package main
 
 import (
@@ -50,7 +64,12 @@ import (
 var errAborted = errors.New("cancelled")
 
 func main() {
-	err := run()
+	dispatch(run())
+}
+
+// dispatch renders a top-level error (or clean cancellation) and sets the exit
+// code.
+func dispatch(err error) {
 	if err == nil {
 		return
 	}
@@ -76,6 +95,12 @@ func main() {
 // takes to answer its service query.
 const discoverTimeout = 4 * time.Second
 
+// devHostReachAddr is the address the VM uses to reach this host under
+// VirtualBox NAT — the same value scripts/sync-addon-to-vm.sh assumes. In --dev
+// it is the default for cloud_base_url / mqtt_host so no addressing flags are
+// needed; an explicit --cloud-base-url / --mqtt-host still wins.
+const devHostReachAddr = "10.0.2.2"
+
 // options is the fully-resolved CLI input.
 type options struct {
 	host          string
@@ -100,6 +125,10 @@ type options struct {
 	waitProvision time.Duration
 	assumeYes     bool
 	dev           bool
+
+	// devCloudPort is the port scripts/sync-addon-to-vm.sh serves Laravel on; in
+	// --dev the default cloud_base_url is http://<devHostReachAddr>:<devCloudPort>.
+	devCloudPort int
 }
 
 func run() error {
@@ -141,6 +170,12 @@ func run() error {
 		},
 	}
 
+	if opts.dev {
+		st.Dev = true
+		fmt.Fprintln(os.Stdout, "  dev:     agent add-on installed manually from the local checkout")
+		fmt.Fprintln(os.Stdout, "           make sure `scripts/sync-addon-to-vm.sh serve` is running and local_smart_home_agent is installed in HA")
+	}
+
 	engine := onboard.NewEngine(onboard.BuildSteps(reporter), reporter)
 	if err := engine.Run(ctx, st); err != nil {
 		return err
@@ -179,17 +214,29 @@ func parseFlags() (options, map[string]bool, error) {
 	flag.DurationVar(&opts.waitCore, "wait-core", 10*time.Minute, "how long to wait for Core to come up on a fresh flash")
 	flag.DurationVar(&opts.waitProvision, "wait-provision", 5*time.Minute, "how long to wait for the agent to provision")
 	flag.BoolVar(&opts.assumeYes, "yes", false, "do not prompt; discover the host non-interactively and fail if a required value is missing")
-	flag.BoolVar(&opts.dev, "dev", false, "developer mode: also look for a local HA (e.g. a VM on 127.0.0.1 that mDNS can't see) and default the broker to plaintext")
+	flag.BoolVar(&opts.dev, "dev", false, "developer mode: skip the store agent add-on (install it from your checkout via scripts/sync-addon-to-vm.sh), look for a local HA (e.g. a VM mDNS can't see), default cloud_base_url/mqtt_host to the VirtualBox NAT host (10.0.2.2), and default the broker to plaintext")
+	flag.IntVar(&opts.devCloudPort, "dev-cloud-port", 8090, "port scripts/sync-addon-to-vm.sh serves Laravel on; the default --dev cloud_base_url is http://10.0.2.2:<port>")
 
 	flag.Parse()
 
 	provided := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { provided[f.Name] = true })
 
-	// Developer defaults: a local dev broker is almost always plaintext. Only
-	// applied when the operator did not set --mqtt-tls explicitly.
+	// Developer defaults, applied only when the operator did not set the flag:
+	// a local dev broker is almost always plaintext on 1883, and the VM reaches
+	// this host's Laravel + broker at the VirtualBox NAT address that
+	// scripts/sync-addon-to-vm.sh assumes.
 	if opts.dev && !provided["mqtt-tls"] {
 		opts.mqttTLS = false
+	}
+	if opts.dev && !provided["mqtt-port"] {
+		opts.mqttPort = 1883
+	}
+	if opts.dev && opts.cloudBaseURL == "" {
+		opts.cloudBaseURL = fmt.Sprintf("http://%s:%d", devHostReachAddr, opts.devCloudPort)
+	}
+	if opts.dev && opts.mqttHost == "" {
+		opts.mqttHost = devHostReachAddr
 	}
 
 	return opts, provided, nil
@@ -305,6 +352,9 @@ func resolveHost(ctx context.Context, def string, dev, interactive bool, p *prom
 // arrived by flag are left untouched; secrets already present in the environment
 // are not re-asked.
 func promptMissing(opts *options, provided map[string]bool, p *prompter, out io.Writer) error {
+	// In --dev the cloud origin and broker host are already defaulted to the
+	// VirtualBox NAT host, so they are non-empty here and skip the prompt; an
+	// explicit flag still overrides.
 	if opts.cloudBaseURL == "" {
 		v, err := p.required("Cloud base URL (e.g. https://app.example.com)")
 		if err != nil {
@@ -390,6 +440,8 @@ func promptMissing(opts *options, provided map[string]bool, p *prompter, out io.
 // validate enforces the four inputs the run cannot proceed without, phrased so
 // the message tells the operator both the flag and the env fallback.
 func validate(o options) error {
+	// --dev defaults cloud_base_url + mqtt_host to the VirtualBox NAT host, so by
+	// the time we validate they are set like any other run.
 	switch {
 	case o.cloudBaseURL == "":
 		return errors.New("--cloud-base-url is required")

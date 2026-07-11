@@ -20,7 +20,6 @@ const (
 	StepConfigureAgent = "configure-agent"
 	StepStartAgent     = "start-agent"
 	StepAwaitProvision = "await-provision"
-	StepPinRelease     = "pin-release"
 )
 
 // installTimeout bounds a single add-on install/update; a first install pulls a
@@ -41,7 +40,6 @@ func BuildSteps(reporter Reporter) []Step {
 		configureAgentStep(reporter),
 		startAgentStep(reporter),
 		awaitProvisionStep(reporter),
-		pinReleaseStep(reporter),
 	}
 }
 
@@ -218,9 +216,14 @@ func addonRepositoryStep(reporter Reporter) Step {
 	}
 }
 
-// installAddonsStep installs every add-on in the release (resolving each full
-// slug from the store), pinning to the manifest version when one is set. It also
-// caches the resolved agent slug for the later start/await steps.
+// installAddonsStep installs every add-on in the bootstrap set (resolving each
+// full slug from the store) at the latest available version — everything runs
+// latest, so the CLI never pins. In `--dev` mode the store agent add-on is
+// SKIPPED: the developer installs the local add-on (local_smart_home_agent)
+// from their checkout via scripts/sync-addon-to-vm.sh, so this step only checks
+// it is present (printing how to install it when it isn't); the rest still
+// install from the store. It also caches the resolved agent slug for the later
+// start/await steps.
 func installAddonsStep(reporter Reporter) Step {
 	return Step{
 		Name: StepInstallAddons,
@@ -232,23 +235,9 @@ func installAddonsStep(reporter Reporter) Step {
 			}
 
 			for _, a := range st.Manifest.Addons {
-				slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
-				if err != nil {
+				installed, err := addonInstalled(ctx, st, a)
+				if err != nil || !installed {
 					return false, err
-				}
-				if !found {
-					return false, nil
-				}
-
-				info, err := st.Client.AddonInfo(ctx, slug)
-				if err != nil {
-					return false, err
-				}
-				if !info.Installed {
-					return false, nil
-				}
-				if a.Pinned() && info.Version != a.Version {
-					return false, nil
 				}
 			}
 
@@ -256,40 +245,16 @@ func installAddonsStep(reporter Reporter) Step {
 		},
 		Act: func(ctx context.Context, st *State) error {
 			for _, a := range st.Manifest.Addons {
-				slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
-				if err != nil {
-					return err
-				}
-				if !found {
-					return fmt.Errorf("add-on %q is not in the store yet (try re-running to resume)", a.Name)
-				}
-
-				info, err := st.Client.AddonInfo(ctx, slug)
-				if err != nil {
-					return err
-				}
-
-				if !info.Installed {
-					reporter.Info(fmt.Sprintf("installing %s (%s)", a.Name, slug))
-					if err := withTimeout(ctx, installTimeout, func(ctx context.Context) error {
-						return st.Client.InstallAddon(ctx, slug)
-					}); err != nil {
-						return fmt.Errorf("install %s: %w", a.Name, err)
-					}
-
-					info, err = st.Client.AddonInfo(ctx, slug)
-					if err != nil {
+				if isAgentAddon(a) && st.Dev {
+					if err := requireLocalAgent(ctx, st, reporter); err != nil {
 						return err
 					}
+
+					continue
 				}
 
-				if a.Pinned() && info.Version != a.Version {
-					reporter.Info(fmt.Sprintf("pinning %s to %s (currently %s)", a.Name, a.Version, info.Version))
-					if err := withTimeout(ctx, installTimeout, func(ctx context.Context) error {
-						return st.Client.UpdateAddon(ctx, slug, a.Version)
-					}); err != nil {
-						return fmt.Errorf("pin %s to %s: %w", a.Name, a.Version, err)
-					}
+				if err := installStoreAddon(ctx, st, a, reporter); err != nil {
+					return err
 				}
 			}
 
@@ -297,19 +262,11 @@ func installAddonsStep(reporter Reporter) Step {
 		},
 		Verify: func(ctx context.Context, st *State) error {
 			for _, a := range st.Manifest.Addons {
-				slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
+				installed, err := addonInstalled(ctx, st, a)
 				if err != nil {
 					return err
 				}
-				if !found {
-					return fmt.Errorf("add-on %q did not resolve after install", a.Name)
-				}
-
-				info, err := st.Client.AddonInfo(ctx, slug)
-				if err != nil {
-					return err
-				}
-				if !info.Installed {
+				if !installed {
 					return fmt.Errorf("add-on %q is not installed", a.Name)
 				}
 			}
@@ -317,6 +274,80 @@ func installAddonsStep(reporter Reporter) Step {
 			return nil
 		},
 	}
+}
+
+// addonInstalled reports whether a manifest add-on is installed, using the local
+// slug for the agent in dev mode and the store-resolved slug otherwise. A
+// not-yet-resolvable store add-on counts as "not installed" (drives Act).
+func addonInstalled(ctx context.Context, st *State, a fleet.Addon) (bool, error) {
+	if isAgentAddon(a) && st.Dev {
+		info, err := st.Client.AddonInfo(ctx, LocalAgentSlug)
+		if err != nil {
+			return false, err
+		}
+
+		return info.Installed, nil
+	}
+
+	slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
+	if err != nil || !found {
+		return false, err
+	}
+
+	info, err := st.Client.AddonInfo(ctx, slug)
+	if err != nil {
+		return false, err
+	}
+
+	return info.Installed, nil
+}
+
+// installStoreAddon installs one add-on from the store at latest when missing.
+func installStoreAddon(ctx context.Context, st *State, a fleet.Addon, reporter Reporter) error {
+	slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("add-on %q is not in the store yet (try re-running to resume)", a.Name)
+	}
+
+	info, err := st.Client.AddonInfo(ctx, slug)
+	if err != nil {
+		return err
+	}
+	if info.Installed {
+		return nil
+	}
+
+	reporter.Info(fmt.Sprintf("installing %s (%s)", a.Name, slug))
+
+	return withTimeout(ctx, installTimeout, func(ctx context.Context) error {
+		if err := st.Client.InstallAddon(ctx, slug); err != nil {
+			return fmt.Errorf("install %s: %w", a.Name, err)
+		}
+
+		return nil
+	})
+}
+
+// requireLocalAgent (dev only) confirms the developer has installed the local
+// agent add-on (local_smart_home_agent) from their checkout. smart-onboard no
+// longer delivers the source itself — that is scripts/sync-addon-to-vm.sh's job
+// — so when the add-on is not yet present this prints how to install it and
+// fails, letting the resumable re-run continue once it is there.
+func requireLocalAgent(ctx context.Context, st *State, reporter Reporter) error {
+	reporter.Info(devAgentNote)
+
+	info, err := st.Client.AddonInfo(ctx, LocalAgentSlug)
+	if err != nil {
+		return err
+	}
+	if info.Installed {
+		return nil
+	}
+
+	return fmt.Errorf("the local agent add-on (%s) is not installed yet — install it from your checkout (scripts/sync-addon-to-vm.sh serve, then add it via the HA UI), then re-run to resume", LocalAgentSlug)
 }
 
 // configureAgentStep writes the agent add-on's options (cloud URL, factory key,
@@ -478,85 +509,6 @@ func awaitProvisionStep(reporter Reporter) Step {
 	}
 }
 
-// pinReleaseStep locks the unit to the release: it disables auto-update on the
-// pinned add-ons and, when the manifest names explicit OS/Core versions that
-// differ from what is running, converges them. On a template release (no pinned
-// versions) it is a no-op that the engine reports as skipped.
-func pinReleaseStep(reporter Reporter) Step {
-	return Step{
-		Name: StepPinRelease,
-		Check: func(ctx context.Context, st *State) (bool, error) {
-			if !pinningNeeded(st.Manifest) {
-				return true, nil
-			}
-
-			return pinSatisfied(ctx, st)
-		},
-		Act: func(ctx context.Context, st *State) error {
-			for _, a := range st.Manifest.Addons {
-				if !a.Pinned() {
-					continue
-				}
-
-				slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
-				if err != nil {
-					return err
-				}
-				if !found {
-					continue
-				}
-
-				if err := st.Client.SetAddonAutoUpdate(ctx, slug, false); err != nil {
-					return fmt.Errorf("disable auto-update on %s: %w", a.Name, err)
-				}
-			}
-
-			if v := st.Manifest.HAOS.Version; v != "" {
-				if err := convergeVersion(ctx, reporter, "Home Assistant OS", v,
-					st.Client.OSInfo, st.Client.UpdateOS); err != nil {
-					return err
-				}
-			}
-
-			if v := st.Manifest.Core.Version; v != "" {
-				if err := convergeVersion(ctx, reporter, "Home Assistant Core", v,
-					st.Client.CoreInfo, st.Client.UpdateCore); err != nil {
-					return err
-				}
-			}
-
-			return nil
-		},
-		Verify: func(ctx context.Context, st *State) error {
-			// Auto-update is the invariant we can confirm without racing an
-			// OS/Core update+reboot, so verify only that.
-			for _, a := range st.Manifest.Addons {
-				if !a.Pinned() {
-					continue
-				}
-
-				slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
-				if err != nil {
-					return err
-				}
-				if !found {
-					continue
-				}
-
-				info, err := st.Client.AddonInfo(ctx, slug)
-				if err != nil {
-					return err
-				}
-				if info.AutoUpdate {
-					return fmt.Errorf("auto-update is still enabled on %s", a.Name)
-				}
-			}
-
-			return nil
-		},
-	}
-}
-
 // --- step helpers ---------------------------------------------------------
 
 // resolveAgentSlug caches the agent add-on's full slug on the State the first
@@ -564,6 +516,14 @@ func pinReleaseStep(reporter Reporter) Step {
 // the install step.
 func resolveAgentSlug(ctx context.Context, st *State) error {
 	if st.AgentSlug != "" {
+		return nil
+	}
+
+	// In dev mode the agent is a LOCAL add-on with a fixed slug — it never lives
+	// in the store, so skip the store resolution.
+	if st.Dev {
+		st.AgentSlug = LocalAgentSlug
+
 		return nil
 	}
 
@@ -663,71 +623,6 @@ func jsonEqual(a, b any) bool {
 	}
 
 	return string(ab) == string(bb)
-}
-
-// pinningNeeded reports whether the release names anything to pin: explicit
-// OS/Core versions or at least one pinned add-on.
-func pinningNeeded(m *fleet.Manifest) bool {
-	if m.HAOS.Version != "" || m.Core.Version != "" {
-		return true
-	}
-	for _, a := range m.Addons {
-		if a.Pinned() {
-			return true
-		}
-	}
-
-	return false
-}
-
-// pinSatisfied reports whether auto-update is already off on every pinned add-on
-// (the safely-checkable part of a pin).
-func pinSatisfied(ctx context.Context, st *State) (bool, error) {
-	for _, a := range st.Manifest.Addons {
-		if !a.Pinned() {
-			continue
-		}
-
-		slug, found, err := st.Client.ResolveAddonSlug(ctx, a)
-		if err != nil {
-			return false, err
-		}
-		if !found {
-			return false, nil
-		}
-
-		info, err := st.Client.AddonInfo(ctx, slug)
-		if err != nil {
-			return false, err
-		}
-		if info.AutoUpdate {
-			return false, nil
-		}
-	}
-
-	return true, nil
-}
-
-// convergeVersion updates OS/Core to want only when the running version differs,
-// warning that this is disruptive (it can trigger a reboot/restart).
-func convergeVersion(
-	ctx context.Context,
-	reporter Reporter,
-	label, want string,
-	info func(context.Context) (VersionInfo, error),
-	update func(context.Context, string) error,
-) error {
-	current, err := info(ctx)
-	if err != nil {
-		return err
-	}
-	if current.Version == want {
-		return nil
-	}
-
-	reporter.Info(fmt.Sprintf("converging %s from %s to pinned %s (this can restart the unit)", label, current.Version, want))
-
-	return update(ctx, want)
 }
 
 // withTimeout runs fn under a child context bounded by d.
