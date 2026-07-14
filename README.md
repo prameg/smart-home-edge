@@ -16,12 +16,12 @@ repo's URL (Settings → Add-ons → Add-on Store → ⋮ → Repositories) and 
 | `repository.json`    | HA add-on repository descriptor (makes this repo an installable store).                        |
 | `smart-home-agent/`  | The Go agent add-on: provisions, bridges HA ↔ cloud MQTT, implements the contract both ways.   |
 | `smart-home-agent/cmd/smart-onboard/` | The onboarding CLI: drives a freshly flashed HAOS gateway to provisioned + claim code over HA's public APIs (resumable). |
-| `smart-home-agent/fleet/release.json` | Machine-readable fleet manifest the CLI reads — add-on/Core/OS versions to install + pin (twin of `docs/fleet-release.md`). |
+| `smart-home-agent/fleet/release.json` | Version-free bootstrap add-on set the onboarding CLI installs (repo + slugs, no pinning; the agent keeps everything at latest — see `docs/fleet-update.md`). |
 | `infra/`             | Cloud broker node (Mosquitto + mosquitto-go-auth) — `docker-compose` + config for an external host. |
 | `infra/local/`       | Plain, anonymous local Mosquitto for on-machine testing (Homebrew or Docker).                  |
 | `docs/local-testing.md` | Run the agent against your Home Assistant VM + a local broker, with or without the cloud.    |
 | `docs/mqtt-contract.md` | **Mirrored** copy of the cloud repo's boundary doc. The single source of truth is the cloud repo; keep both in lockstep. |
-| `docs/fleet-release.md` | Pinned Core/OS/add-on version manifest (template — populate on the bring-up unit). |
+| `docs/fleet-update.md` | The latest-everywhere fleet model: HA `auto_update`, the agent's `updateAll` engine, the fleet Update command + status. |
 | `docs/offline-validation.md` | Runbook for the offline-autonomy + reconnect-reconciliation acceptance test.   |
 | `docs/factory-onboarding.md` | Onboarding decision + `smart-onboard` runbook (stock HAOS + CLI; Supervised rejected; Jetson-as-companion recorded). |
 | `docs/production-onboarding.md` | Team runbook: onboard a gateway against the live cloud (`smart.prameg.net`) + broker (`mqtt.prameg.net`), repeatable per unit. |
@@ -61,6 +61,10 @@ To run the agent outside HAOS against your HA VM + a local broker, see
 - **Two-way state sync** — HA state changes flow up as HA-native
   `{ state, attributes }`; the cloud's desired shadow flows down and converges by
   version, with the agent reporting HA's *actual* state (not an echo).
+- **Fleet updates (latest-everywhere)** — the agent enables HA `auto_update` and
+  its `updateAll` engine brings add-ons/HAOS/Core/self to latest on a daily
+  self-check or an on-demand `/gateways` **Update** command, reporting progress
+  on `update/status` (see `docs/fleet-update.md`).
 - **Offline autonomy + reconnect self-heal** — the home runs locally with the
   WAN down; on reconnect the retained `availability`/`config`/`shadow`, the
   persistent session's buffered downlink, and a (re)connect state reconcile bring
@@ -77,8 +81,6 @@ To run the agent outside HAOS against your HA VM + a local broker, see
   server-only TLS + per-gateway ACL, which is sufficient; if adopted later,
   per-gateway client certs (revocable per device) are preferred over a shared
   fleet cert.
-- **Fleet-release rollout automation** — the version manifest exists
-  (`docs/fleet-release.md`) but rolling a release across a fleet is manual.
 - **Device events/alarms** — the event topic + cloud `events` table are wired,
   but the agent only emits `agent.boot` today; no device-level alarms (motion,
   door, low battery, offline) are produced yet.
@@ -89,7 +91,7 @@ To run the agent outside HAOS against your HA VM + a local broker, see
 - **Onboarding CLI on real hardware** — `smart-onboard` (stock HAOS + HA's
   public APIs, see `docs/factory-onboarding.md`) is implemented and unit-tested,
   but its end-to-end run against a live Supervisor is still to be validated on
-  the bring-up unit (and the fleet manifest's versions populated).
+  the bring-up unit (including the `--dev` local-agent flow).
 - **AI companion node (Jetson, etc.)** — decided as a companion node next to the
   Pi (stock JetPack + Docker → local MQTT via MQTT Discovery, synced by the
   agent), but roadmap-only: no Jetson runtime package, MQTT entity contract, or

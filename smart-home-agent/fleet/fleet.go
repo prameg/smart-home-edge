@@ -1,18 +1,18 @@
-// Package fleet is the machine-readable twin of docs/fleet-release.md: one
-// pinned, tested set of versions for everything smart-onboard puts on a gateway
-// (HAOS, HA Core, the add-ons we depend on, and our agent). The onboarding CLI
-// reads a Manifest to know which add-on repository to add, which add-ons to
-// install (and at which exact versions), and what to pin the OS/Core to so a
-// unit never drifts off a validated release.
+// Package fleet is the static bootstrap add-on set both halves of the fleet
+// share: the repository to register and the add-ons (repo + slugs, NO versions)
+// to install so a fresh unit can start the agent and provision. It is
+// deliberately version-free — everything runs the LATEST available: the CLI
+// installs latest at onboarding, and the agent keeps the unit fresh afterwards
+// (auto_update on the add-ons + its own updateAll on command / daily check).
 //
-// A default manifest is embedded at build time (release.json in this package),
-// so the shipped binary always has a self-contained release definition; a caller
-// can override it with an on-disk file (smart-onboard --manifest ...) for
-// testing a candidate release before it is committed.
+// A default bootstrap set is embedded at build time (release.json in this
+// package), so the shipped binary is self-contained; a caller can override it
+// with an on-disk file (smart-onboard --manifest ...) for bringing up a unit
+// against a different add-on repository.
 //
-// This is also the artifact Phase 4 fleet rollout will push, and where the
-// future Jetson AI-node section (JetPack version, container image digests, model
-// versions) will live.
+// The agent reads this same set at runtime to know WHICH add-ons it manages
+// (updateAll installs/updates them to latest); there are no pinned versions
+// anywhere.
 package fleet
 
 import (
@@ -29,43 +29,24 @@ import (
 //go:embed release.json
 var embedded []byte
 
-// Manifest is one fleet release: the exact versions that define "what is on this
-// unit". A release is either populated (Populated=true — every version pinned and
-// validated) or a template (Populated=false — versions still blank, used on a
-// bring-up unit where the CLI installs latest and skips pinning).
+// Manifest is the managed add-on set: which add-on store repository to register
+// and which add-ons to install (latest available, no pinning). It carries NO
+// versions on purpose — everything runs the latest, kept fresh by the agent's
+// updateAll and HA's per-add-on auto_update.
 type Manifest struct {
-	// ReleaseID is the human release tag, e.g. "2026.07-r1".
-	ReleaseID string `json:"release_id"`
-	// Populated reports whether this release's versions have been filled in and
-	// validated. When false the CLI treats every blank version as "install
-	// latest / do not pin" and warns rather than failing.
-	Populated bool `json:"populated"`
-	// Notes is free-form context carried alongside the machine-readable fields
-	// (JSON has no comments); not consumed programmatically.
-	Notes string `json:"notes,omitempty"`
-
-	// HAOS / Core are the OS and Home Assistant Core versions to converge to.
-	HAOS Component `json:"haos"`
-	Core Component `json:"core"`
-
 	// AddonRepository is the add-on store repo (this edge repo) the CLI ensures
 	// is registered so our agent add-on becomes installable.
 	AddonRepository string `json:"addon_repository"`
 
-	// Addons is the ordered set of add-ons the gateway depends on.
+	// Addons is the ordered set of add-ons the gateway needs at bootstrap.
 	Addons []Addon `json:"addons"`
 }
 
-// Component is a single pinned version (blank in a template release).
-type Component struct {
-	Version string `json:"version"`
-}
-
-// Addon is one add-on in the release. Community add-ons carry a repo-hash prefix
-// in their full Supervisor slug that we cannot know ahead of time, so the CLI
-// resolves the full slug at runtime by matching Match against the store; Slug is
-// an optional exact override for add-ons whose full slug is stable (the built-in
-// "core_*" add-ons).
+// Addon is one add-on in the bootstrap set. Community add-ons carry a repo-hash
+// prefix in their full Supervisor slug that we cannot know ahead of time, so the
+// CLI resolves the full slug at runtime by matching Match against the store;
+// Slug is an optional exact override for add-ons whose full slug is stable (the
+// built-in "core_*" add-ons).
 type Addon struct {
 	// Name is the human label shown in CLI output.
 	Name string `json:"name"`
@@ -76,9 +57,6 @@ type Addon struct {
 	Match string `json:"match"`
 	// Slug, when set, is the exact full Supervisor slug and bypasses Match.
 	Slug string `json:"slug,omitempty"`
-	// Version is the pinned add-on version; blank means "install latest and do
-	// not pin" (template release).
-	Version string `json:"version"`
 	// Repository is the add-on store repo URL to register before installing a
 	// community add-on; blank for built-in ("core") add-ons.
 	Repository string `json:"repository,omitempty"`
@@ -120,14 +98,9 @@ func parse(raw []byte, source string) (*Manifest, error) {
 	return &m, nil
 }
 
-// Validate checks the invariants the CLI relies on: a release id, an add-on
-// repository to register, and an agent add-on to install (the whole point of
-// onboarding). Blank versions are allowed on purpose (template releases).
+// Validate checks the invariants the CLI relies on: an add-on repository to
+// register and an agent add-on to install (the whole point of onboarding).
 func (m *Manifest) Validate() error {
-	if strings.TrimSpace(m.ReleaseID) == "" {
-		return fmt.Errorf("release_id is required")
-	}
-
 	if strings.TrimSpace(m.AddonRepository) == "" {
 		return fmt.Errorf("addon_repository is required")
 	}
@@ -162,11 +135,6 @@ func (m *Manifest) Agent() *Addon {
 	}
 
 	return nil
-}
-
-// Pinned reports whether this add-on has an explicit version to install/pin.
-func (a Addon) Pinned() bool {
-	return strings.TrimSpace(a.Version) != ""
 }
 
 // Resolves reports whether fullSlug is this add-on: an exact Slug match when one

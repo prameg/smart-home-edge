@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build smart-home-agent.tgz for Track 3 (local add-on install via HA terminal).
-# Excludes dev-only secrets and local state — the add-on gets its own /data volume.
+# Excludes dev-only secrets and local state — the add-on gets its own /data volume
+# — and strips config.yaml's `image:` key so Supervisor builds the Dockerfile
+# on-device instead of pulling the (unpublished) GHCR image at the version tag.
 #
 # Usage:
 #   ./scripts/sync-addon-to-vm.sh        # write dist/smart-home-agent.tgz, print curl one-liner
@@ -110,14 +112,31 @@ EOF
 build_tarball() {
   mkdir -p "$(dirname "${TARBALL}")"
 
-  # Avoid macOS AppleDouble (._*) junk in the archive.
-  COPYFILE_DISABLE=1 tar czf "${TARBALL}" \
+  # Stage a filtered copy of the source, then strip config.yaml's `image:` key so
+  # Supervisor BUILDS the local Dockerfile instead of pulling the GHCR image at
+  # the `version:` tag — a local add-on has no published image, so the pull 404s
+  # (e.g. ghcr.io/.../{arch}-smart_home_agent:0.1.1 not found). tar-pipe-tar
+  # applies the excludes into the staging dir; COPYFILE_DISABLE avoids macOS
+  # AppleDouble (._*) junk.
+  local stage
+  stage="$(mktemp -d)"
+  trap 'rm -rf "${stage}"' RETURN
+
+  COPYFILE_DISABLE=1 tar cf - \
     --exclude='smart-home-agent/.data' \
     --exclude='smart-home-agent/.env.local' \
     --exclude='smart-home-agent/agent' \
     --exclude='smart-home-agent/dist' \
     -C "$(pwd)/.." \
-    smart-home-agent
+    smart-home-agent | tar xf - -C "${stage}"
+
+  # Drop only the top-level `image:` line (leave nested/commented ones alone).
+  local cfg="${stage}/smart-home-agent/config.yaml"
+  if [[ -f "${cfg}" ]]; then
+    sed -i.bak '/^image:/d' "${cfg}" && rm -f "${cfg}.bak"
+  fi
+
+  COPYFILE_DISABLE=1 tar czf "${TARBALL}" -C "${stage}" smart-home-agent
 }
 
 print_ha_commands() {

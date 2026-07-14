@@ -26,7 +26,6 @@ type fakeDevice struct {
 	starts   map[string]int
 	restarts map[string]int
 	options  map[string]map[string]any
-	autoOff  map[string]bool
 
 	coreConfig    CoreConfig
 	coreConfigSet bool
@@ -41,7 +40,6 @@ func newFakeDevice() *fakeDevice {
 		starts:   map[string]int{},
 		restarts: map[string]int{},
 		options:  map[string]map[string]any{},
-		autoOff:  map[string]bool{},
 	}
 }
 
@@ -115,27 +113,10 @@ func (f *fakeDevice) InstallAddon(_ context.Context, slug string) error {
 	return nil
 }
 
-func (f *fakeDevice) UpdateAddon(_ context.Context, slug, version string) error {
-	if info, ok := f.addons[slug]; ok {
-		info.Version = version
-	}
-
-	return nil
-}
-
 func (f *fakeDevice) SetAddonOptions(_ context.Context, slug string, options map[string]any) error {
 	f.options[slug] = options
 	if info, ok := f.addons[slug]; ok {
 		info.Options = options
-	}
-
-	return nil
-}
-
-func (f *fakeDevice) SetAddonAutoUpdate(_ context.Context, slug string, enabled bool) error {
-	f.autoOff[slug] = !enabled
-	if info, ok := f.addons[slug]; ok {
-		info.AutoUpdate = enabled
 	}
 
 	return nil
@@ -159,20 +140,14 @@ func (f *fakeDevice) RestartAddon(_ context.Context, slug string) error {
 	return nil
 }
 
-func (f *fakeDevice) OSInfo(context.Context) (VersionInfo, error)   { return VersionInfo{}, nil }
-func (f *fakeDevice) CoreInfo(context.Context) (VersionInfo, error) { return VersionInfo{}, nil }
-func (f *fakeDevice) UpdateOS(context.Context, string) error        { return nil }
-func (f *fakeDevice) UpdateCore(context.Context, string) error      { return nil }
-
 func (f *fakeDevice) ClaimInfo(context.Context, string) (ClaimInfo, error) { return f.claim, nil }
 
-// testManifest is a minimal single-add-on release used by the step tests.
-func testManifest(agentVersion string) *fleet.Manifest {
+// testManifest is a minimal single-add-on bootstrap set used by the step tests.
+func testManifest() *fleet.Manifest {
 	return &fleet.Manifest{
-		ReleaseID:       "test",
 		AddonRepository: "https://repo.test",
 		Addons: []fleet.Addon{
-			{Name: "Smart Home Agent", Match: "smart_home_agent", Version: agentVersion, Repository: "https://repo.test"},
+			{Name: "Smart Home Agent", Match: "smart_home_agent", Repository: "https://repo.test"},
 		},
 	}
 }
@@ -184,7 +159,7 @@ func TestOwnerAndTokenStepBranches(t *testing.T) {
 
 	t.Run("fresh device creates owner", func(t *testing.T) {
 		dev := newFakeDevice()
-		st := &State{Client: dev, Manifest: testManifest(""), Owner: OwnerConfig{Username: "admin", Password: "pw"}, CoreConfig: CoreConfig{Country: "SA"}}
+		st := &State{Client: dev, Manifest: testManifest(), Owner: OwnerConfig{Username: "admin", Password: "pw"}, CoreConfig: CoreConfig{Country: "SA"}}
 
 		if err := step.Act(context.Background(), st); err != nil {
 			t.Fatalf("Act: %v", err)
@@ -206,7 +181,7 @@ func TestOwnerAndTokenStepBranches(t *testing.T) {
 	t.Run("re-run logs in", func(t *testing.T) {
 		dev := newFakeDevice()
 		dev.onboarding.UserDone = true
-		st := &State{Client: dev, Manifest: testManifest(""), Owner: OwnerConfig{Username: "admin", Password: "pw"}}
+		st := &State{Client: dev, Manifest: testManifest(), Owner: OwnerConfig{Username: "admin", Password: "pw"}}
 
 		if err := step.Act(context.Background(), st); err != nil {
 			t.Fatalf("Act: %v", err)
@@ -226,7 +201,7 @@ func TestInstallAddonsStep(t *testing.T) {
 	dev := newFakeDevice()
 	dev.knownSlugs = []string{"hash_smart_home_agent"}
 
-	st := &State{Client: dev, Manifest: testManifest("")}
+	st := &State{Client: dev, Manifest: testManifest()}
 
 	done, err := step.Check(context.Background(), st)
 	if err != nil {
@@ -257,30 +232,36 @@ func TestInstallAddonsStep(t *testing.T) {
 	}
 }
 
-// A pinned version that does not match the installed one triggers an update.
-func TestInstallAddonsStepPins(t *testing.T) {
+// The install step installs the latest available add-on and never pins: an
+// already-installed add-on (any version) short-circuits Check, so the CLI leaves
+// version selection entirely to the cloud after claim.
+func TestInstallAddonsStepDoesNotPin(t *testing.T) {
 	step := installAddonsStep(&captureReporter{})
 
 	dev := newFakeDevice()
 	dev.knownSlugs = []string{"hash_smart_home_agent"}
-	// Already installed, but at the wrong version.
+	// Already installed at some version — the CLI must treat this as done and
+	// must not touch the version.
 	dev.addons["hash_smart_home_agent"] = &AddonInfo{Slug: "hash_smart_home_agent", Installed: true, Version: "0.0.1"}
 
-	st := &State{Client: dev, Manifest: testManifest("1.2.3")}
+	st := &State{Client: dev, Manifest: testManifest()}
 
 	done, err := step.Check(context.Background(), st)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	if done {
-		t.Fatal("a version mismatch should not be considered done")
+	if !done {
+		t.Fatal("an already-installed add-on should be considered done (no pinning)")
 	}
 
 	if err := step.Act(context.Background(), st); err != nil {
 		t.Fatalf("Act: %v", err)
 	}
-	if dev.addons["hash_smart_home_agent"].Version != "1.2.3" {
-		t.Errorf("expected pin to 1.2.3, got %q", dev.addons["hash_smart_home_agent"].Version)
+	if dev.installs["hash_smart_home_agent"] != 0 {
+		t.Errorf("must not reinstall an already-installed add-on, got %d", dev.installs["hash_smart_home_agent"])
+	}
+	if dev.addons["hash_smart_home_agent"].Version != "0.0.1" {
+		t.Errorf("CLI must not change the add-on version, got %q", dev.addons["hash_smart_home_agent"].Version)
 	}
 }
 
@@ -294,7 +275,7 @@ func TestConfigureAgentStepRestartsRunningAddon(t *testing.T) {
 	newState := func(dev *fakeDevice) *State {
 		return &State{
 			Client:       dev,
-			Manifest:     testManifest(""),
+			Manifest:     testManifest(),
 			AgentSlug:    "hash_smart_home_agent",
 			AgentOptions: map[string]any{"cloud_base_url": "http://192.168.100.73:8090"},
 		}
@@ -338,7 +319,7 @@ func TestAwaitProvisionStepCapturesClaim(t *testing.T) {
 	dev.knownSlugs = []string{"hash_smart_home_agent"}
 	dev.claim = ClaimInfo{UID: "uid-1", ClaimCode: "ABCD-EFGH"}
 
-	st := &State{Client: dev, Manifest: testManifest(""), Timeouts: Timeouts{WaitProvision: time.Second}}
+	st := &State{Client: dev, Manifest: testManifest(), Timeouts: Timeouts{WaitProvision: time.Second}}
 
 	done, err := step.Check(context.Background(), st)
 	if err != nil {
@@ -356,7 +337,7 @@ func TestAwaitProvisionStepCapturesClaim(t *testing.T) {
 func TestResolveAgentSlugCaches(t *testing.T) {
 	dev := newFakeDevice()
 	dev.knownSlugs = []string{"hash_smart_home_agent"}
-	st := &State{Client: dev, Manifest: testManifest("")}
+	st := &State{Client: dev, Manifest: testManifest()}
 
 	if err := resolveAgentSlug(context.Background(), st); err != nil {
 		t.Fatalf("resolveAgentSlug: %v", err)
@@ -418,17 +399,5 @@ func TestRequiredRepositoriesAndPresence(t *testing.T) {
 	}
 	if repoPresent([]string{"https://other.test"}, "https://repo.test") {
 		t.Error("unrelated repo must not match")
-	}
-}
-
-func TestPinningNeeded(t *testing.T) {
-	if pinningNeeded(&fleet.Manifest{Addons: []fleet.Addon{{Match: "x"}}}) {
-		t.Error("a template with no versions needs no pinning")
-	}
-	if !pinningNeeded(&fleet.Manifest{Addons: []fleet.Addon{{Match: "x", Version: "1.0"}}}) {
-		t.Error("a pinned add-on needs pinning")
-	}
-	if !pinningNeeded(&fleet.Manifest{Core: fleet.Component{Version: "2026.7"}, Addons: []fleet.Addon{{Match: "x"}}}) {
-		t.Error("a pinned Core version needs pinning")
 	}
 }

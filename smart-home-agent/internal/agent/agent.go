@@ -76,15 +76,18 @@ type Agent struct {
 	buffer   *uplinkBuffer
 	dedupe   *cmdDedupe
 
-	// sup drives the Supervisor API for cloud-orchestrated self-update; nil when
-	// the agent is not running inside HAOS (no SUPERVISOR_TOKEN). release tracks
-	// the release the agent has converged to; releaseMu/converging serialize the
-	// (slow, reboot-prone) convergence so overlapping retained redeliveries never
-	// double-run it.
-	sup        *supervisor.Client
-	release    *releaseStore
-	releaseMu  sync.Mutex
-	converging bool
+	// sup drives the Supervisor API to bring the unit to the latest; nil when the
+	// agent is not running inside HAOS (no SUPERVISOR_TOKEN). updateState is the
+	// on-disk resume marker for an update interrupted by a reboot; updateMu /
+	// updating serialize the (slow, reboot-prone) pass so a command, the daily
+	// self-check, and a boot-resume never double-run it. autoMu / lastAutoCheck
+	// throttle the self-check to at most once per updateCheckInterval.
+	sup           *supervisor.Client
+	updateState   *updateStore
+	updateMu      sync.Mutex
+	updating      bool
+	autoMu        sync.Mutex
+	lastAutoCheck time.Time
 
 	// reconnect asks the run loop to cycle the broker connection (buffered,
 	// depth 1, coalesced). The manual re-provision path signals it after
@@ -127,27 +130,27 @@ type Agent struct {
 // the agent can re-provision itself when the broker rejects a stale password.
 func New(cfg *config.Config, log *slog.Logger, creds *provision.Credentials, haClient *ha.Client, prov *provision.Client) *Agent {
 	a := &Agent{
-		cfg:        cfg,
-		log:        log,
-		creds:      creds,
-		ha:         haClient,
-		prov:       prov,
-		emap:       entitymap.Load(cfg.ConfigDir),
-		versions:   newVersionStore(cfg.DataDir),
-		release:    newReleaseStore(cfg.DataDir),
-		buffer:     newUplinkBuffer(uplinkBufferLimit),
-		dedupe:     newCmdDedupe(cmdDedupeLimit),
-		reconnect:  make(chan struct{}, 1),
-		configPath: configStatePath(cfg.DataDir),
+		cfg:         cfg,
+		log:         log,
+		creds:       creds,
+		ha:          haClient,
+		prov:        prov,
+		emap:        entitymap.Load(cfg.ConfigDir),
+		versions:    newVersionStore(cfg.DataDir),
+		updateState: newUpdateStore(cfg.DataDir),
+		buffer:      newUplinkBuffer(uplinkBufferLimit),
+		dedupe:      newCmdDedupe(cmdDedupeLimit),
+		reconnect:   make(chan struct{}, 1),
+		configPath:  configStatePath(cfg.DataDir),
 	}
 
 	// Inside HAOS the Supervisor injects a token; that (plus hassio_role:
-	// manager) is what lets the agent self-update to a cloud-pushed release.
-	// Outside HAOS (local dev) there is no token and release handling is inert.
+	// manager) is what lets the agent update itself and the unit to the latest.
+	// Outside HAOS (local dev) there is no token and update handling is inert.
 	if cfg.SupervisorToken != "" {
 		a.sup = supervisor.New(
 			&supervisor.HTTPTransport{BaseURL: cfg.SupervisorBaseURL, Token: cfg.SupervisorToken},
-			releaseCallTimeout, releaseInstallTimeout,
+			updateCallTimeout, updateInstallTimeout,
 		)
 	}
 
@@ -196,6 +199,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	ticker := time.NewTicker(inventoryRefreshInterval)
 	defer ticker.Stop()
 
+	// The agent's own self-check: bring the unit to the latest roughly daily
+	// even with no fleet command, so a gateway that missed a command (offline at
+	// the time) still converges. Jittered per-device so a fleet does not check in
+	// lock-step. Inert outside HAOS (startUpdate no-ops when sup is nil).
+	updateTicker := time.NewTicker(jitteredInterval(updateCheckInterval))
+	defer updateTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -229,6 +239,11 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.publishInventory(ctx)
 		case <-ticker.C:
 			a.publishInventory(ctx)
+		case <-updateTicker.C:
+			if a.isClaimed() {
+				a.markAutoChecked()
+				a.startUpdate("")
+			}
 		}
 	}
 }
@@ -396,11 +411,11 @@ func (a *Agent) activateClaimed(c *mqtt.Client) {
 		a.log.Error("subscribe shadow failed", "error", err)
 	}
 
-	// Cloud-orchestrated fleet updates: the retained target-release doc drives
-	// the agent's self-update. Claimed-only (matches the broker ACL), so it lives
-	// here rather than in the always-on config subscription.
-	if err := c.Subscribe(contract.ReleaseDesiredTopic(a.creds.UID), 1, a.handleRelease); err != nil {
-		a.log.Error("subscribe release failed", "error", err)
+	// Cloud-triggered fleet updates: the one-shot update command asks the agent
+	// to bring the unit to the latest. Claimed-only (matches the broker ACL), so
+	// it lives here rather than in the always-on config subscription.
+	if err := c.Subscribe(contract.UpdateTopic(a.creds.UID), 1, a.handleUpdate); err != nil {
+		a.log.Error("subscribe update failed", "error", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -408,14 +423,20 @@ func (a *Agent) activateClaimed(c *mqtt.Client) {
 
 	a.publishInventory(ctx)
 
-	// Report the running software inventory + converged release so the cloud's
-	// gateway versions reflect what is actually running after any update/reboot.
+	// Report the running software inventory so the cloud's gateway versions
+	// reflect what is actually running after any update/reboot.
 	a.publishVersions(ctx)
 
 	// Re-assert HA's current state for every mapped device so reported_state
 	// self-heals after a reconnect/restart. Off the callback goroutine: it does
 	// one HA GET per device and must not block the broker connect handler.
 	go a.reconcileReportedState()
+
+	// Resume an update interrupted by a reboot, or run a throttled self-check so
+	// a freshly-claimed / just-booted unit converges to the latest without
+	// waiting for the daily ticker. Off the callback goroutine (Supervisor calls
+	// take minutes).
+	go a.resumeOrCheckUpdates()
 }
 
 // deactivateClaimed reverses activateClaimed when the gateway is unclaimed

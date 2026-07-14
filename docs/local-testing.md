@@ -301,6 +301,37 @@ Track 1/2 — use it to prove packaging, not for fast iteration.
 Until this repo is published at a git URL you can add as an add-on *repository*,
 use the **local add-ons** path.
 
+### Semi-automated: `scripts/sync-addon-to-vm.sh serve` + `smart-onboard --dev`
+
+`scripts/sync-addon-to-vm.sh serve` installs the add-on (serves the source so you
+drop it into the VM and install it via the HA UI), and `smart-onboard --dev`
+drives the rest of onboarding around it. `--dev` **skips** the store agent add-on
+and only checks `local_smart_home_agent` is present, defaults `cloud_base_url` to
+`http://10.0.2.2:8090` and `mqtt_host` to `10.0.2.2` (VirtualBox NAT), and
+defaults the broker to plaintext — so no addressing flags are needed:
+
+```bash
+# Terminal 1 — expose the dev stack to the VM (serves source + Laravel)
+./scripts/sync-addon-to-vm.sh serve                # tarball on :8765 + Laravel on :8090
+mosquitto -c infra/local/mosquitto.local.conf -v   # broker on 0.0.0.0:1883
+
+# Then in the HA terminal, drop the source in and install it via the UI
+# (Settings → Add-ons → Add-on store → ⋮ → Check for updates → Local add-ons →
+# Smart Home Agent → Install) — see step 1/2 below.
+
+# Terminal 2 — from smart-home-agent/, once local_smart_home_agent is installed
+./smart-onboard --dev --factory-key <SMART_HOME_PROVISIONING_FACTORY_KEY>
+```
+
+`smart-onboard --dev` is resumable: if you run it before the local add-on is
+installed, `install-addons` fails with a reminder to run
+`scripts/sync-addon-to-vm.sh serve` and install it — do that, then re-run and it
+picks up at `configure-agent` / `start-agent` / `await-provision`.
+
+Iterate on agent code by re-running `scripts/sync-addon-to-vm.sh` (rebuilds the
+tarball + prints the re-drop `curl` + the `ha addons rebuild` / `restart`
+commands). The manual steps below are the same flow written out.
+
 ### 1. Get the add-on folder into the VM
 
 Build the tarball and expose the dev stack to the VM (VirtualBox host =

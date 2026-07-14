@@ -75,19 +75,26 @@ func ConfigTopic(gatewayUID string) string {
 }
 
 // VersionsTopic is the uplink RETAINED software-inventory topic. The agent
-// publishes it on every connect (and after a self-update reboot) so the cloud's
-// gateways.{agent,ha,os}_version and reported_release_id reflect what is ACTUALLY
-// running — independent of provisioning, which only ran at first boot/recovery.
+// publishes it on every connect (and after an update reboot) so the cloud's
+// gateways.{agent,ha,os}_version reflect what is ACTUALLY running — independent
+// of provisioning, which only ran at first boot/recovery.
 func VersionsTopic(gatewayUID string) string {
 	return fmt.Sprintf("%s/%s/versions", Root, gatewayUID)
 }
 
-// ReleaseDesiredTopic is the downlink RETAINED target-release topic. The cloud
-// publishes the release the gateway should converge to (agent version + optional
-// OS/Core/dependency add-on versions); the agent self-updates via the Supervisor
-// API and reports convergence back on VersionsTopic. Monotonic on ReleaseSeq.
-func ReleaseDesiredTopic(gatewayUID string) string {
-	return fmt.Sprintf("%s/%s/release/desired", Root, gatewayUID)
+// UpdateTopic is the downlink one-shot UPDATE command (cloud -> agent). The
+// cloud publishes it NON-RETAINED to ask the gateway to bring add-ons, HAOS,
+// Core, and the agent itself to the latest available. A missed command (offline
+// gateway) is fine by design: the agent's own daily self-check converges the
+// unit anyway, so there is no retained doc or sequence cursor to track.
+func UpdateTopic(gatewayUID string) string {
+	return fmt.Sprintf("%s/%s/update", Root, gatewayUID)
+}
+
+// UpdateStatusTopic is the uplink fleet-update progress topic (agent -> cloud):
+// started/ok/failed, for both cloud-triggered updates and the daily self-check.
+func UpdateStatusTopic(gatewayUID string) string {
+	return fmt.Sprintf("%s/%s/update/status", Root, gatewayUID)
 }
 
 // StatePayload is the uplink homes/{uid}/state/{device_uid} body.
@@ -213,43 +220,41 @@ type ConfigPayload struct {
 }
 
 // VersionsPayload is the uplink retained homes/{uid}/versions body: the
-// gateway's currently-running software inventory. ReleaseID is the release the
-// agent has converged to ("" when the gateway has never been given a target),
-// so the cloud declares rollout convergence by reported_release_id ==
-// target_release_id — the same reported-vs-desired language as config/shadow.
+// gateway's currently-running software inventory. Everything runs latest, so
+// there is no pinned-release cursor — these versions are pure observability.
 type VersionsPayload struct {
 	AgentVersion string `json:"agent_version"`
 	HAVersion    string `json:"ha_version,omitempty"`
 	OSVersion    string `json:"os_version,omitempty"`
-	ReleaseID    string `json:"release_id,omitempty"`
 	TS           string `json:"ts"`
 }
 
-// ReleaseAddon is one add-on target in a release: the stable inner slug to match
-// (or an exact slug), the pinned version, and the repo to register for a
-// community add-on. Mirrors the resolvable fields of the fleet manifest add-on
-// without coupling the wire to the fleet package.
-type ReleaseAddon struct {
-	Match      string `json:"match,omitempty"`
-	Slug       string `json:"slug,omitempty"`
-	Version    string `json:"version"`
-	Repository string `json:"repository,omitempty"`
-	Core       bool   `json:"core"`
+// UpdatePayload is the downlink homes/{uid}/update body: a correlation id the
+// agent echoes back on update/status so the cloud can tie a progress report to
+// the command that triggered it. TS is advisory.
+type UpdatePayload struct {
+	UpdateID string `json:"update_id"`
+	TS       string `json:"ts"`
 }
 
-// ReleasePayload is the downlink retained homes/{uid}/release/desired body: the
-// pinned version set the gateway should converge to. ReleaseSeq is monotonic (a
-// lower redelivery is ignored, mirroring config_version). AgentVersion is the
-// agent add-on target; the optional OS/Core/add-on versions extend a rollout to
-// the rest of the release. A blank version means "leave as-is / do not pin".
-type ReleasePayload struct {
-	ReleaseID    string         `json:"release_id"`
-	ReleaseSeq   int            `json:"release_seq"`
-	AgentVersion string         `json:"agent_version"`
-	HAOSVersion  string         `json:"haos_version,omitempty"`
-	CoreVersion  string         `json:"core_version,omitempty"`
-	Addons       []ReleaseAddon `json:"addons,omitempty"`
-	TS           string         `json:"ts"`
+// UpdateStatus is the constrained progress vocabulary the cloud maps onto its
+// UpdateStatus enum (started -> updating, ok, failed).
+type UpdateStatus string
+
+const (
+	UpdateStarted UpdateStatus = "started"
+	UpdateOK      UpdateStatus = "ok"
+	UpdateFailed  UpdateStatus = "failed"
+)
+
+// UpdateStatusPayload is the uplink homes/{uid}/update/status body. UpdateID
+// echoes the command's id ("" for the agent's own daily self-check); Error
+// carries the failure detail only when Status is failed.
+type UpdateStatusPayload struct {
+	UpdateID string       `json:"update_id,omitempty"`
+	Status   UpdateStatus `json:"status"`
+	Error    string       `json:"error,omitempty"`
+	TS       string       `json:"ts"`
 }
 
 // PairingEventType is the {type} segment of the uplink event topic carrying
