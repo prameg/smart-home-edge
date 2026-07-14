@@ -1,7 +1,7 @@
 # Home Assistant add-on manifest for the smart-home agent.
 # Docs: https://developers.home-assistant.io/docs/add-ons/configuration
 name: Smart Home Agent
-version: "0.2.0"
+version: "0.3.0"
 slug: smart_home_agent
 
 # Prebuilt image published by CI (.github/workflows/build.yaml) to GHCR, so
