@@ -111,6 +111,38 @@ Semantics:
   retained doc re-drives convergence on restart. Claimed-only (subscribed
   alongside `cmd`/`shadow`).
 
+## Pairing (gateway-scoped)
+
+Pairing a new physical device is driven from the cloud wizard over the existing
+`cmd` + `event` topics — no new topic families, so the broker ACL is unchanged.
+
+Downlink `homes/{uid}/cmd` actions with **no `device_uid`** (the gateway itself
+is the target; `commands.device_id` is null):
+
+- `pairing.start` — params `{ "protocol": "zigbee", "duration_sec": 30..254, "session_id": "<uuid>" }`.
+  Opens the protocol's join window (Zigbee2MQTT `permit_join` over the
+  gateway-local broker). 254 s is Z2M's maximum window.
+- `pairing.stop` — params `{ "protocol": "...", "session_id": "<uuid>" }`. Closes it early.
+
+Uplink `homes/{uid}/event/pairing` (QoS 1, not retained) — one message per phase:
+
+```json
+{ "session_id": "…", "phase": "device_found", "ts": "…",
+  "expires_at": "…", "device": { "ieee": "…", "friendly_name": "…", "model": "…", "vendor": "…" },
+  "reason": "…" }
+```
+
+Phases: `started` (carries `expires_at`) → `device_found` → `interviewing` →
+`completed` | `failed` (carries `reason`) | `stopped` (`reason`: `user` | `timeout`).
+
+The cloud routes this event type to the pairing-session state machine
+(`PairingEventHandler`), NOT the generic home-events feed. Transitions are
+idempotent under QoS-1 redelivery: a terminal session never regresses, so no
+`event_id` dedupe is needed. The agent runs at most one session at a time
+(a second `pairing.start` acks `failed` with a `failed` phase event, mirroring
+the cloud's 409) and the registered device still arrives via the normal
+`inventory` sync — pairing only opens the door.
+
 ## State vocabulary (desired and reported share one shape)
 
 Both the reported `state` (uplink) and the desired `state` (downlink `state`

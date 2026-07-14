@@ -9,7 +9,11 @@ slug: smart_home_agent
 # substituted by Supervisor per board (aarch64 on the Pi 5). The package is
 # PUBLIC, so gateways pull with no credentials. If this key is ever removed,
 # Supervisor falls back to an on-device build from the Dockerfile.
-image: ghcr.io/prameg/smart-home-edge/{arch}-smart_home_agent
+# DEV-DEPLOY (device-pairing verification): commented out so Supervisor builds
+# the agent on-device from the Dockerfile — the GHCR image predates the
+# uncommitted pairing code. RESTORE this line before the feature ships so the
+# fleet pulls CI's prebuilt image again.
+# image: ghcr.io/prameg/smart-home-edge/{arch}-smart_home_agent
 description: >-
   Bridges this Home Assistant instance to the smart-home cloud: self-provisions,
   connects to the cloud MQTT broker over TLS with a persistent session, and
@@ -34,6 +38,15 @@ homeassistant_api: true
 # internal/agent/release.go.
 hassio_api: true
 hassio_role: manager
+
+# Device pairing opens a SECOND, gateway-local MQTT connection to the broker
+# Zigbee2MQTT publishes on (core-mosquitto). The agent mints those local creds
+# from the Supervisor services API (GET /services/mqtt), which Supervisor only
+# grants to add-ons that declare the service here. `want` (not `need`) keeps the
+# agent bootable on gateways with no MQTT service — initPairing then degrades to
+# "pairing disabled: no local broker" instead of blocking startup.
+services:
+  - mqtt:want
 
 # The agent only makes OUTBOUND connections (cloud HTTP + broker); the default
 # bridge network already gives it DNS + egress, so no host networking and no

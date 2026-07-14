@@ -15,8 +15,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,7 +27,9 @@ import (
 	"github.com/smart-home/edge/agent/internal/contract"
 	"github.com/smart-home/edge/agent/internal/entitymap"
 	"github.com/smart-home/edge/agent/internal/ha"
+	"github.com/smart-home/edge/agent/internal/localmqtt"
 	"github.com/smart-home/edge/agent/internal/mqtt"
+	"github.com/smart-home/edge/agent/internal/pairing"
 	"github.com/smart-home/edge/agent/internal/provision"
 	"github.com/smart-home/edge/agent/internal/supervisor"
 	"github.com/smart-home/edge/agent/internal/webui"
@@ -108,6 +113,11 @@ type Agent struct {
 	claimed       bool
 	configVersion int
 	inventoryHash string
+
+	// pairing serializes device-pairing sessions (Zigbee2MQTT over the
+	// gateway-local broker); nil when no local broker is reachable, in which
+	// case pairing commands ack failed with a `failed` pairing event.
+	pairing *pairing.Manager
 }
 
 // New builds an agent from resolved credentials and dependencies. It restores
@@ -160,6 +170,10 @@ func (a *Agent) Run(ctx context.Context) error {
 			a.log.Error("web UI server stopped", "error", err)
 		}
 	}()
+
+	// Best-effort: pairing needs the gateway-local broker (Z2M's bus); its
+	// absence must never block the cloud bridge.
+	a.initPairing(ctx)
 
 	a.broker = mqtt.New(mqtt.Options{
 		Host:                a.cfg.MQTTHost,
@@ -482,6 +496,14 @@ func (a *Agent) handleCommand(_ string, raw []byte) {
 		return
 	}
 
+	// Gateway-scoped pairing commands carry no device_uid and never touch the
+	// entity map — route them before the device lookup.
+	if strings.HasPrefix(cmd.Action, "pairing.") {
+		a.handlePairingCommand(cmd)
+
+		return
+	}
+
 	entityID := a.entityForDevice(cmd.DeviceUID)
 	if entityID == "" {
 		a.log.Warn("cmd for unmapped device", "device_uid", cmd.DeviceUID, "cmd_id", cmd.CmdID)
@@ -646,6 +668,103 @@ func (a *Agent) PublishEvent(eventType, eventID string, severity contract.Severi
 	}
 
 	a.publishUplink(contract.EventTopic(a.creds.UID, eventType), payload, false)
+}
+
+// handlePairingCommand routes pairing.start/stop to the manager. Gateway-
+// scoped: no device_uid, no entity map. Every failure emits a `failed`
+// pairing event (so the wizard sees why) in addition to the command ack.
+func (a *Agent) handlePairingCommand(cmd contract.CommandPayload) {
+	sessionID, _ := cmd.Params["session_id"].(string)
+	if sessionID == "" {
+		a.ackCommand(cmd.CmdID, contract.AckFailed)
+
+		return
+	}
+
+	if a.pairing == nil {
+		a.emitPairingEvent(sessionID, pairing.Event{Phase: contract.PairingPhaseFailed, Reason: "pairing unavailable on this gateway"})
+		a.ackCommand(cmd.CmdID, contract.AckFailed)
+
+		return
+	}
+
+	switch cmd.Action {
+	case "pairing.start":
+		durationSec := 120
+		if v, ok := cmd.Params["duration_sec"].(float64); ok && v > 0 {
+			durationSec = int(v)
+		}
+
+		if err := a.pairing.Start(sessionID, durationSec); err != nil {
+			reason := "pairing start failed"
+			if errors.Is(err, pairing.ErrBusy) {
+				reason = "another pairing session is active"
+			}
+			a.emitPairingEvent(sessionID, pairing.Event{Phase: contract.PairingPhaseFailed, Reason: reason})
+			a.ackCommand(cmd.CmdID, contract.AckFailed)
+
+			return
+		}
+		a.ackCommand(cmd.CmdID, contract.AckAcked)
+	case "pairing.stop":
+		a.pairing.Stop(sessionID, "user")
+		a.ackCommand(cmd.CmdID, contract.AckAcked)
+	default:
+		a.ackCommand(cmd.CmdID, contract.AckFailed)
+	}
+}
+
+// emitPairingEvent publishes one pairing phase upstream.
+func (a *Agent) emitPairingEvent(sessionID string, ev pairing.Event) {
+	payload := contract.PairingEventPayload{
+		SessionID: sessionID,
+		Phase:     ev.Phase,
+		Device:    ev.Device,
+		Reason:    ev.Reason,
+		TS:        time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if !ev.ExpiresAt.IsZero() {
+		payload.ExpiresAt = ev.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+
+	a.publishUplink(contract.EventTopic(a.creds.UID, contract.PairingEventType), payload, false)
+}
+
+// initPairing wires the pairing manager to Zigbee2MQTT over the gateway-local
+// broker. Pairing is optional: without local-broker access (Mac dev track, or
+// a gateway with no mqtt service) the agent runs fine and pairing commands
+// ack failed with reason "unavailable".
+func (a *Agent) initPairing(ctx context.Context) {
+	opts, err := localmqtt.Resolve(ctx)
+	if err != nil {
+		a.log.Info("pairing disabled: no local broker", "error", err)
+
+		return
+	}
+
+	client, err := localmqtt.Connect(opts, a.log)
+	if err != nil {
+		a.log.Warn("pairing disabled: local broker connect failed", "error", err)
+
+		return
+	}
+
+	backend := pairing.NewZ2M(client, os.Getenv("Z2M_BASE_TOPIC"), a.log)
+	manager := pairing.NewManager(backend, a.emitPairingEvent, a.log)
+
+	if err := client.Subscribe(backend.BridgeEventTopic(), func(_ string, raw []byte) {
+		if ev, ok := pairing.MapBridgeEvent(raw); ok {
+			manager.HandleBackendEvent(ev)
+		}
+	}); err != nil {
+		a.log.Warn("pairing disabled: bridge/event subscribe failed", "error", err)
+		client.Close()
+
+		return
+	}
+
+	a.pairing = manager
+	a.log.Info("pairing enabled", "broker", opts.Host, "bridge_topic", backend.BridgeEventTopic())
 }
 
 // ackCommand publishes a cmd/ack.

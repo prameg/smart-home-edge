@@ -251,3 +251,39 @@ type ReleasePayload struct {
 	Addons       []ReleaseAddon `json:"addons,omitempty"`
 	TS           string         `json:"ts"`
 }
+
+// PairingEventType is the {type} segment of the uplink event topic carrying
+// pairing-session progress: homes/{uid}/event/pairing. The cloud routes it to
+// the session state machine instead of the generic home-events feed.
+const PairingEventType = "pairing"
+
+// Pairing phases — the exact strings the cloud's PairingEventHandler matches.
+const (
+	PairingPhaseStarted      = "started"
+	PairingPhaseDeviceFound  = "device_found"
+	PairingPhaseInterviewing = "interviewing"
+	PairingPhaseCompleted    = "completed"
+	PairingPhaseFailed       = "failed"
+	PairingPhaseStopped      = "stopped"
+)
+
+// PairingDevice is the protocol-specific detail of the device being paired.
+// All fields best-effort; Zigbee fills them from Z2M's bridge events.
+type PairingDevice struct {
+	IEEE         string `json:"ieee,omitempty"`
+	FriendlyName string `json:"friendly_name,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Vendor       string `json:"vendor,omitempty"`
+}
+
+// PairingEventPayload is the uplink homes/{uid}/event/pairing body. One
+// message per phase; the cloud applies them idempotently (terminal sessions
+// never regress), so QoS-1 redelivery is safe without an event_id.
+type PairingEventPayload struct {
+	SessionID string         `json:"session_id"`
+	Phase     string         `json:"phase"`
+	ExpiresAt string         `json:"expires_at,omitempty"`
+	Device    *PairingDevice `json:"device,omitempty"`
+	Reason    string         `json:"reason,omitempty"`
+	TS        string         `json:"ts"`
+}

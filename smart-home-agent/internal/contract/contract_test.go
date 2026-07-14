@@ -64,3 +64,22 @@ func indexOf(s, sub string) int {
 
 	return -1
 }
+
+func TestPairingEventPayloadShape(t *testing.T) {
+	payload := PairingEventPayload{
+		SessionID: "s-1",
+		Phase:     PairingPhaseDeviceFound,
+		Device:    &PairingDevice{IEEE: "0xabc", FriendlyName: "0xabc", Model: "ZBMINIL2", Vendor: "SONOFF"},
+		TS:        "2026-07-11T00:00:00Z",
+	}
+
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := `{"session_id":"s-1","phase":"device_found","device":{"ieee":"0xabc","friendly_name":"0xabc","model":"ZBMINIL2","vendor":"SONOFF"},"ts":"2026-07-11T00:00:00Z"}`
+	if string(raw) != want {
+		t.Fatalf("wire shape mismatch:\n got %s\nwant %s", raw, want)
+	}
+}

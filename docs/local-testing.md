@@ -242,6 +242,9 @@ Adds real provisioning + ingest. Do this after Track 1 works.
    ```bash
    composer dev            # app + queue + vite
    php artisan mqtt:subscribe   # in its own terminal — connects to local broker
+   php artisan reverb:start     # websockets — live UI updates (device pairing
+                                # wizard etc.); the UI falls back to polling
+                                # without it, so optional but recommended
    ```
    (The anonymous local broker means the cloud's `mqtt:subscribe` connects
    without go-auth; that's fine for local. go-auth is only exercised on the
