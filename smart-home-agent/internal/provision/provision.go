@@ -29,6 +29,7 @@ package provision
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -375,6 +376,48 @@ func (c *Client) ReissueClaimCode(ctx context.Context) (*Credentials, error) {
 	}
 
 	return existing, nil
+}
+
+// UploadBackup ships an opaque backup blob (the Zigbee coordinator backup) to
+// the cloud for this gateway, authenticated by the stored provision token — the
+// same TRUSTED per-unit credential recovery uses, so the backup surface grants
+// no more trust than re-provisioning. Best-effort by contract: the caller treats
+// any failure as "retry next cycle", never fatal. A unit with no stored token
+// (never provisioned) returns an error without touching the network.
+func (c *Client) UploadBackup(ctx context.Context, format string, data []byte) error {
+	existing, err := c.load()
+	if err != nil || existing == nil || existing.ProvisionToken == "" {
+		return fmt.Errorf("provision: cannot upload backup without a stored provision token")
+	}
+
+	body, err := json.Marshal(map[string]string{
+		"serial":          existing.Serial,
+		"provision_token": existing.ProvisionToken,
+		"format":          format,
+		"data":            base64.StdEncoding.EncodeToString(data),
+	})
+	if err != nil {
+		return fmt.Errorf("provision: encode backup request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.CloudURL("/api/v1/provisioning/gateways/backup"), bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("provision: build backup request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("provision: backup request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return decodeError(resp)
+	}
+
+	return nil
 }
 
 // decodeError turns a non-2xx provisioning response into a structured *Error,

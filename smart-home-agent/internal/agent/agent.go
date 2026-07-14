@@ -21,8 +21,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/smart-home/edge/agent/internal/backup"
 	"github.com/smart-home/edge/agent/internal/config"
 	"github.com/smart-home/edge/agent/internal/contract"
 	"github.com/smart-home/edge/agent/internal/entitymap"
@@ -55,6 +57,15 @@ const (
 	// agent posts while unclaimed, so it can update or dismiss the same one
 	// rather than stacking duplicates.
 	claimNotificationID = "smart_home_claim_code"
+
+	// backupCheckInterval is how often a claimed gateway ships its Zigbee
+	// coordinator backup to the cloud; jittered per-device so a fleet does not
+	// upload in lock-step. backupInitialDelay gives Z2M + the broker time to
+	// settle after boot before the first backup. zigbeeBackupTimeout bounds the
+	// wait for Z2M's bridge/response/backup reply.
+	backupCheckInterval = 24 * time.Hour
+	backupInitialDelay  = 2 * time.Minute
+	zigbeeBackupTimeout = 30 * time.Second
 )
 
 // Agent binds the HA bridge and broker connection to the contract.
@@ -121,6 +132,17 @@ type Agent struct {
 	// gateway-local broker); nil when no local broker is reachable, in which
 	// case pairing commands ack failed with a `failed` pairing event.
 	pairing *pairing.Manager
+
+	// localMQTT is the gateway-local broker connection (shared with pairing);
+	// z2mBase is Z2M's base topic. Both are set by initPairing and nil/empty when
+	// no local broker is reachable, which disables backups. zigbeeBackupResp
+	// delivers Z2M's bridge/response/backup payload (buffer 1; a stale reply is
+	// drained before each request). backupInflight guards against overlapping
+	// backup runs sharing that single-consumer channel.
+	localMQTT        *localmqtt.Client
+	z2mBase          string
+	zigbeeBackupResp chan []byte
+	backupInflight   atomic.Bool
 }
 
 // New builds an agent from resolved credentials and dependencies. It restores
@@ -130,18 +152,19 @@ type Agent struct {
 // the agent can re-provision itself when the broker rejects a stale password.
 func New(cfg *config.Config, log *slog.Logger, creds *provision.Credentials, haClient *ha.Client, prov *provision.Client) *Agent {
 	a := &Agent{
-		cfg:         cfg,
-		log:         log,
-		creds:       creds,
-		ha:          haClient,
-		prov:        prov,
-		emap:        entitymap.Load(cfg.ConfigDir),
-		versions:    newVersionStore(cfg.DataDir),
-		updateState: newUpdateStore(cfg.DataDir),
-		buffer:      newUplinkBuffer(uplinkBufferLimit),
-		dedupe:      newCmdDedupe(cmdDedupeLimit),
-		reconnect:   make(chan struct{}, 1),
-		configPath:  configStatePath(cfg.DataDir),
+		cfg:              cfg,
+		log:              log,
+		creds:            creds,
+		ha:               haClient,
+		prov:             prov,
+		emap:             entitymap.Load(cfg.ConfigDir),
+		versions:         newVersionStore(cfg.DataDir),
+		updateState:      newUpdateStore(cfg.DataDir),
+		buffer:           newUplinkBuffer(uplinkBufferLimit),
+		dedupe:           newCmdDedupe(cmdDedupeLimit),
+		reconnect:        make(chan struct{}, 1),
+		configPath:       configStatePath(cfg.DataDir),
+		zigbeeBackupResp: make(chan []byte, 1),
 	}
 
 	// Inside HAOS the Supervisor injects a token; that (plus hassio_role:
@@ -206,6 +229,14 @@ func (a *Agent) Run(ctx context.Context) error {
 	updateTicker := time.NewTicker(jitteredInterval(updateCheckInterval))
 	defer updateTicker.Stop()
 
+	// Ship the Zigbee coordinator backup roughly daily (jittered), plus once
+	// shortly after boot so a freshly claimed unit is protected quickly. Inert
+	// until claimed and when no local broker is reachable (see runBackup).
+	backupTicker := time.NewTicker(jitteredInterval(backupCheckInterval))
+	defer backupTicker.Stop()
+	backupKick := time.NewTimer(backupInitialDelay)
+	defer backupKick.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -244,6 +275,10 @@ func (a *Agent) Run(ctx context.Context) error {
 				a.markAutoChecked()
 				a.startUpdate("")
 			}
+		case <-backupKick.C:
+			go a.runBackup(ctx)
+		case <-backupTicker.C:
+			go a.runBackup(ctx)
 		}
 	}
 }
@@ -751,6 +786,60 @@ func (a *Agent) emitPairingEvent(sessionID string, ev pairing.Event) {
 	a.publishUplink(contract.EventTopic(a.creds.UID, contract.PairingEventType), payload, false)
 }
 
+// runBackup pulls this gateway's Zigbee coordinator backup from Z2M and ships it
+// to the cloud. Best-effort throughout: it is a no-op for an unclaimed gateway or
+// one with no local broker, and any failure is logged, not fatal — a missed cycle
+// just retries next tick. Runs on its own goroutine (the Z2M round-trip can take
+// seconds) with a single-flight guard so overlapping ticks never both consume the
+// shared response channel.
+func (a *Agent) runBackup(ctx context.Context) {
+	if !a.isClaimed() || a.localMQTT == nil {
+		return
+	}
+	if !a.backupInflight.CompareAndSwap(false, true) {
+		return
+	}
+	defer a.backupInflight.Store(false)
+
+	data, err := a.fetchZigbeeCoordinatorBackup(ctx)
+	if err != nil {
+		a.log.Info("skipping coordinator backup", "error", err)
+
+		return
+	}
+
+	if err := a.prov.UploadBackup(ctx, backup.CoordinatorFormat, data); err != nil {
+		a.log.Warn("coordinator backup upload failed", "error", err)
+
+		return
+	}
+
+	a.log.Info("shipped coordinator backup", "bytes", len(data))
+}
+
+// fetchZigbeeCoordinatorBackup asks Z2M for a backup over the local broker and
+// returns coordinator_backup.json. It drains any stale response first so it reads
+// the reply to THIS request, then waits up to zigbeeBackupTimeout.
+func (a *Agent) fetchZigbeeCoordinatorBackup(ctx context.Context) ([]byte, error) {
+	select {
+	case <-a.zigbeeBackupResp:
+	default:
+	}
+
+	if err := a.localMQTT.Publish(backup.RequestTopic(a.z2mBase), []byte("{}")); err != nil {
+		return nil, fmt.Errorf("request zigbee backup: %w", err)
+	}
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case raw := <-a.zigbeeBackupResp:
+		return backup.CoordinatorBackupFromResponse(raw)
+	case <-time.After(zigbeeBackupTimeout):
+		return nil, fmt.Errorf("timed out waiting for zigbee2mqtt backup response")
+	}
+}
+
 // initPairing wires the pairing manager to Zigbee2MQTT over the gateway-local
 // broker. Pairing is optional: without local-broker access (Mac dev track, or
 // a gateway with no mqtt service) the agent runs fine and pairing commands
@@ -770,7 +859,12 @@ func (a *Agent) initPairing(ctx context.Context) {
 		return
 	}
 
-	backend := pairing.NewZ2M(client, os.Getenv("Z2M_BASE_TOPIC"), a.log)
+	base := os.Getenv("Z2M_BASE_TOPIC")
+	if base == "" {
+		base = "zigbee2mqtt"
+	}
+
+	backend := pairing.NewZ2M(client, base, a.log)
 	manager := pairing.NewManager(backend, a.emitPairingEvent, a.log)
 
 	if err := client.Subscribe(backend.BridgeEventTopic(), func(_ string, raw []byte) {
@@ -784,7 +878,31 @@ func (a *Agent) initPairing(ctx context.Context) {
 		return
 	}
 
+	// Subscribe once to Z2M's backup response; deliver the newest payload to the
+	// buffered channel (drop if full — runBackup drains it before each request),
+	// so backups reuse this same local connection without stacking handlers.
+	if err := client.Subscribe(backup.ResponseTopic(base), func(_ string, raw []byte) {
+		buf := append([]byte(nil), raw...)
+		select {
+		case a.zigbeeBackupResp <- buf:
+		default:
+			select {
+			case <-a.zigbeeBackupResp:
+			default:
+			}
+			select {
+			case a.zigbeeBackupResp <- buf:
+			default:
+			}
+		}
+	}); err != nil {
+		// Non-fatal: pairing still works; only the coordinator backup is disabled.
+		a.log.Warn("coordinator backup disabled: bridge/response/backup subscribe failed", "error", err)
+	}
+
 	a.pairing = manager
+	a.localMQTT = client
+	a.z2mBase = base
 	a.log.Info("pairing enabled", "broker", opts.Host, "bridge_topic", backend.BridgeEventTopic())
 }
 
