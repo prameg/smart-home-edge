@@ -394,18 +394,23 @@ func configureZigbeeStep(reporter Reporter) Step {
 				return fmt.Errorf("Zigbee2MQTT add-on is not in the store yet (try re-running to resume)")
 			}
 
+			// Supervisor validates the WHOLE options object on write, not a patch:
+			// posting only {serial} is rejected ("Missing option 'socat' in root").
+			// So read the add-on's current options and change only `serial`,
+			// preserving data_path / socat / mqtt and whatever else it requires.
+			info, err := st.Client.AddonInfo(ctx, slug)
+			if err != nil {
+				return err
+			}
+
 			reporter.Info(fmt.Sprintf("pointing Zigbee2MQTT at the coordinator (%s, adapter %q)", st.Zigbee.Port, st.Zigbee.Adapter))
-			if err := st.Client.SetAddonOptions(ctx, slug, map[string]any{"serial": st.Zigbee.serialOptions()}); err != nil {
+			if err := st.Client.SetAddonOptions(ctx, slug, mergedZigbeeOptions(info.Options, st.Zigbee)); err != nil {
 				return err
 			}
 
 			// Home Assistant loads add-on options only at container start. Restart
 			// Z2M if it was already running (e.g. a resumed run correcting a wrong
 			// port), otherwise start it for the first time so the radio comes up.
-			info, err := st.Client.AddonInfo(ctx, slug)
-			if err != nil {
-				return err
-			}
 			if info.State == "started" {
 				reporter.Info("restarting Zigbee2MQTT to apply the coordinator configuration")
 
@@ -467,6 +472,36 @@ func resolveZigbeeSlug(ctx context.Context, st *State) (string, bool, error) {
 	}
 
 	return st.Client.ResolveAddonSlug(ctx, *addon)
+}
+
+// mergedZigbeeOptions returns the add-on's current options with our coordinator
+// port + adapter merged into `serial`, leaving every other key untouched.
+// Supervisor validates the FULL options object on write (a partial post fails
+// with "Missing option 'socat'…"), so we must send back everything the add-on
+// already has — data_path, socat, mqtt — and change only the radio. Any existing
+// serial sub-keys (a manually set baudrate/rtscts) are preserved too.
+func mergedZigbeeOptions(current map[string]any, z ZigbeeConfig) map[string]any {
+	opts := make(map[string]any, len(current)+1)
+	for k, v := range current {
+		opts[k] = v
+	}
+
+	serial := map[string]any{}
+	if cur, ok := current["serial"].(map[string]any); ok {
+		for k, v := range cur {
+			serial[k] = v
+		}
+	}
+	serial["port"] = z.Port
+	if z.Adapter != "" {
+		serial["adapter"] = z.Adapter
+	}
+	if z.Baudrate > 0 {
+		serial["baudrate"] = z.Baudrate
+	}
+	opts["serial"] = serial
+
+	return opts
 }
 
 // zigbeeSerialSatisfied reports whether the Z2M add-on's current options already

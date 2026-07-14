@@ -22,3 +22,6 @@ infra/mosquitto/certs/*.srl
 .DS_Store
 .idea/
 .vscode/
+
+# Compiled smart-onboard CLI binary (build locally with: go build ./cmd/smart-onboard)
+/smart-home-agent/smart-onboard

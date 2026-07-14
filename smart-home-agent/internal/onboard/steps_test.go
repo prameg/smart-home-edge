@@ -326,11 +326,21 @@ func TestConfigureZigbeeStep(t *testing.T) {
 	}
 	zcfg := ZigbeeConfig{Port: "/dev/ttyACM0", Adapter: "ember"}
 
-	t.Run("configures a stopped add-on and starts it", func(t *testing.T) {
+	t.Run("configures a stopped add-on, preserving its other options, and starts it", func(t *testing.T) {
 		step := configureZigbeeStep(&captureReporter{})
 		dev := newFakeDevice()
 		dev.knownSlugs = []string{"hash_zigbee2mqtt"}
-		dev.addons["hash_zigbee2mqtt"] = &AddonInfo{Slug: "hash_zigbee2mqtt", Installed: true, State: "stopped"}
+		// Seed the add-on's default options as a fresh install returns them. The
+		// step must send these back untouched — Supervisor rejects a write that
+		// drops a required root key (the real "Missing option 'socat'" failure).
+		dev.addons["hash_zigbee2mqtt"] = &AddonInfo{
+			Slug: "hash_zigbee2mqtt", Installed: true, State: "stopped",
+			Options: map[string]any{
+				"data_path": "/config/zigbee2mqtt",
+				"socat":     map[string]any{"enabled": false},
+				"serial":    map[string]any{},
+			},
+		}
 		st := &State{Client: dev, Manifest: manifest(), Zigbee: zcfg}
 
 		done, err := step.Check(context.Background(), st)
@@ -345,9 +355,17 @@ func TestConfigureZigbeeStep(t *testing.T) {
 			t.Fatalf("Act: %v", err)
 		}
 
-		serial, _ := dev.options["hash_zigbee2mqtt"]["serial"].(map[string]any)
+		posted := dev.options["hash_zigbee2mqtt"]
+		serial, _ := posted["serial"].(map[string]any)
 		if serial["port"] != "/dev/ttyACM0" || serial["adapter"] != "ember" {
-			t.Errorf("Z2M serial options not written: %+v", dev.options["hash_zigbee2mqtt"])
+			t.Errorf("Z2M serial options not written: %+v", posted)
+		}
+		// The required root keys the add-on already had MUST survive the write.
+		if posted["data_path"] != "/config/zigbee2mqtt" {
+			t.Errorf("data_path must be preserved, got %+v", posted)
+		}
+		if _, ok := posted["socat"]; !ok {
+			t.Errorf("socat must be preserved (dropping it is the bug), got %+v", posted)
 		}
 		if dev.starts["hash_zigbee2mqtt"] != 1 {
 			t.Errorf("a stopped Z2M must be started once, got %d", dev.starts["hash_zigbee2mqtt"])

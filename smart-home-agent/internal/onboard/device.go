@@ -189,21 +189,6 @@ type ZigbeeConfig struct {
 // fake light entity instead.
 func (z ZigbeeConfig) Configured() bool { return strings.TrimSpace(z.Port) != "" }
 
-// serialOptions renders the Zigbee2MQTT add-on's `serial` option object. Omitted
-// keys fall back to the add-on's own schema defaults (SetAddonOptions replaces,
-// not merges), so sending just port+adapter is safe.
-func (z ZigbeeConfig) serialOptions() map[string]any {
-	serial := map[string]any{"port": z.Port}
-	if z.Adapter != "" {
-		serial["adapter"] = z.Adapter
-	}
-	if z.Baudrate > 0 {
-		serial["baudrate"] = z.Baudrate
-	}
-
-	return serial
-}
-
 // State is the shared, mutating context threaded through every step: the fixed
 // inputs (client, manifest, owner, agent options, timeouts) plus values
 // accumulated as the run progresses (token, resolved agent slug, provisioned
