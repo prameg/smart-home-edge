@@ -17,15 +17,19 @@ const (
 	StepOwnerAndToken   = "owner-and-token"
 	StepAddonRepos      = "addon-repository"
 	StepInstallAddons   = "install-addons"
+	StepStartBroker     = "start-broker"
 	StepConfigureZigbee = "configure-zigbee"
 	StepConfigureAgent  = "configure-agent"
 	StepStartAgent      = "start-agent"
 	StepAwaitProvision  = "await-provision"
 )
 
-// zigbeeAddonMatch is the manifest `match` of the Zigbee2MQTT add-on
-// (fleet/release.json), used to single it out for radio configuration.
-const zigbeeAddonMatch = "zigbee2mqtt"
+// zigbeeAddonMatch / brokerAddonMatch are the manifest `match` values
+// (fleet/release.json) of the add-ons a step configures beyond a plain install.
+const (
+	zigbeeAddonMatch = "zigbee2mqtt"
+	brokerAddonMatch = "mosquitto"
+)
 
 // installTimeout bounds a single add-on install/update; a first install pulls a
 // container image and can take several minutes on a Pi over a slow link.
@@ -42,6 +46,7 @@ func BuildSteps(reporter Reporter) []Step {
 		ownerAndTokenStep(reporter),
 		addonRepositoryStep(reporter),
 		installAddonsStep(reporter),
+		startBrokerStep(reporter),
 		configureZigbeeStep(reporter),
 		configureAgentStep(reporter),
 		startAgentStep(reporter),
@@ -354,6 +359,87 @@ func requireLocalAgent(ctx context.Context, st *State, reporter Reporter) error 
 	}
 
 	return fmt.Errorf("the local agent add-on (%s) is not installed yet — install it from your checkout (scripts/sync-addon-to-vm.sh serve, then add it via the HA UI), then re-run to resume", LocalAgentSlug)
+}
+
+// startBrokerStep starts the Mosquitto broker add-on. install-addons only
+// installs it, but nothing else runs it — and a stopped broker means the `mqtt`
+// service is never registered with Supervisor, so Zigbee2MQTT can't reach a
+// broker ("Failed to get services from Supervisor API") and the agent's local
+// MQTT link is dead ("no local broker: services/mqtt HTTP 400"), which in turn
+// disables device pairing and the coordinator backup. So the broker must come up
+// before Z2M, exactly like we start Z2M and the agent themselves.
+//
+// Skipped when the manifest has no broker add-on (e.g. a minimal test manifest).
+func startBrokerStep(reporter Reporter) Step {
+	return Step{
+		Name: StepStartBroker,
+		Check: func(ctx context.Context, st *State) (bool, error) {
+			slug, present, err := resolveBrokerSlug(ctx, st)
+			if err != nil || !present {
+				// present=false means either no broker in the manifest (skip) or
+				// it is not resolvable yet (drive Act via not-done).
+				return st.Manifest.Find(brokerAddonMatch) == nil, err
+			}
+
+			info, err := st.Client.AddonInfo(ctx, slug)
+			if err != nil {
+				return false, err
+			}
+
+			return info.State == "started", nil
+		},
+		Act: func(ctx context.Context, st *State) error {
+			slug, present, err := resolveBrokerSlug(ctx, st)
+			if err != nil {
+				return err
+			}
+			if !present {
+				if st.Manifest.Find(brokerAddonMatch) == nil {
+					return nil // no broker in this manifest; nothing to start
+				}
+
+				return fmt.Errorf("Mosquitto broker add-on is not installed yet (try re-running to resume)")
+			}
+
+			reporter.Info("starting the Mosquitto broker")
+
+			return st.Client.StartAddon(ctx, slug)
+		},
+		Verify: func(ctx context.Context, st *State) error {
+			slug, present, err := resolveBrokerSlug(ctx, st)
+			if err != nil || !present {
+				return err // absent broker (nil manifest entry) already skipped in Check
+			}
+
+			for attempt := 0; attempt < 15; attempt++ {
+				info, err := st.Client.AddonInfo(ctx, slug)
+				if err != nil {
+					return err
+				}
+				if info.State == "started" {
+					return nil
+				}
+
+				if err := sleep(ctx, 2*time.Second); err != nil {
+					return err
+				}
+			}
+
+			return fmt.Errorf("Mosquitto broker did not reach the started state")
+		},
+	}
+}
+
+// resolveBrokerSlug maps the manifest's Mosquitto add-on to its full slug.
+// present is false when the manifest has no broker add-on at all (callers skip)
+// or when it is not yet resolvable in the store (callers drive Act to retry).
+func resolveBrokerSlug(ctx context.Context, st *State) (slug string, present bool, err error) {
+	addon := st.Manifest.Find(brokerAddonMatch)
+	if addon == nil {
+		return "", false, nil
+	}
+
+	return st.Client.ResolveAddonSlug(ctx, *addon)
 }
 
 // configureZigbeeStep points the Zigbee2MQTT add-on at the coordinator radio and

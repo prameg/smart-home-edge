@@ -311,6 +311,70 @@ func TestConfigureAgentStepRestartsRunningAddon(t *testing.T) {
 	})
 }
 
+// start-broker starts the Mosquitto add-on (its slug is a stable core slug), is
+// idempotent once started, and skips cleanly when the manifest carries no broker.
+func TestStartBrokerStep(t *testing.T) {
+	withBroker := func() *fleet.Manifest {
+		return &fleet.Manifest{
+			AddonRepository: "https://repo.test",
+			Addons: []fleet.Addon{
+				{Name: "Mosquitto broker", Match: "mosquitto", Slug: "core_mosquitto", Core: true},
+				{Name: "Smart Home Agent", Match: "smart_home_agent", Repository: "https://repo.test"},
+			},
+		}
+	}
+
+	t.Run("starts a stopped broker and is idempotent", func(t *testing.T) {
+		step := startBrokerStep(&captureReporter{})
+		dev := newFakeDevice()
+		dev.addons["core_mosquitto"] = &AddonInfo{Slug: "core_mosquitto", Installed: true, State: "stopped"}
+		st := &State{Client: dev, Manifest: withBroker()}
+
+		done, err := step.Check(context.Background(), st)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if done {
+			t.Fatal("a stopped broker must not be considered started")
+		}
+
+		if err := step.Act(context.Background(), st); err != nil {
+			t.Fatalf("Act: %v", err)
+		}
+		if dev.starts["core_mosquitto"] != 1 {
+			t.Errorf("broker must be started once, got %d", dev.starts["core_mosquitto"])
+		}
+		if err := step.Verify(context.Background(), st); err != nil {
+			t.Errorf("Verify: %v", err)
+		}
+
+		done, err = step.Check(context.Background(), st)
+		if err != nil || !done {
+			t.Errorf("Check should short-circuit once started: done=%v err=%v", done, err)
+		}
+	})
+
+	t.Run("skips when the manifest has no broker", func(t *testing.T) {
+		step := startBrokerStep(&captureReporter{})
+		dev := newFakeDevice()
+		st := &State{Client: dev, Manifest: testManifest()} // agent-only manifest
+
+		done, err := step.Check(context.Background(), st)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if !done {
+			t.Fatal("a manifest without a broker must skip the step (done=true)")
+		}
+		if err := step.Verify(context.Background(), st); err != nil {
+			t.Errorf("Verify must no-op when there is no broker: %v", err)
+		}
+		if dev.starts["core_mosquitto"] != 0 {
+			t.Errorf("nothing should be started when no broker is in the manifest")
+		}
+	})
+}
+
 // configure-zigbee points Z2M at the coordinator and starts it, is idempotent on
 // a resumed run, restarts a Z2M already running with stale radio options, and is
 // skipped entirely when no coordinator is configured (the dev-VM / fake-light case).

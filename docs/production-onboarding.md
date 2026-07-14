@@ -158,6 +158,7 @@ now.)
 | `owner-and-token` | Create the HA owner (or log in on a re-run), mint a long-lived token, set country/time zone. |
 | `addon-repository` | Add `https://github.com/prameg/smart-home-edge` to the add-on store. |
 | `install-addons` | Install agent + Mosquitto + Zigbee2MQTT + Matter Server at **latest** (the version-free bootstrap set; no pinning). |
+| `start-broker` | Start the Mosquitto broker so the `mqtt` service registers — without it Z2M has no broker and the agent's local MQTT (pairing + backup) is dead. Runs before `configure-zigbee`. |
 | `configure-zigbee` | Point Zigbee2MQTT at the coordinator (`/dev/ttyACM0`, adapter `ember` by default) and start it, so the unit can pair on day one. Skipped if `--zigbee-port` is empty. |
 | `configure-agent` | Set the agent's `cloud_base_url`, `factory_key`, `mqtt_*` options. |
 | `start-agent` | Start the agent add-on. |
