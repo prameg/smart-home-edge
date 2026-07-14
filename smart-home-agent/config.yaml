@@ -1,7 +1,7 @@
 # Home Assistant add-on manifest for the smart-home agent.
 # Docs: https://developers.home-assistant.io/docs/add-ons/configuration
 name: Smart Home Agent
-version: "0.1.1"
+version: "0.2.0"
 slug: smart_home_agent
 
 # Prebuilt image published by CI (.github/workflows/build.yaml) to GHCR, so
@@ -9,11 +9,16 @@ slug: smart_home_agent
 # substituted by Supervisor per board (aarch64 on the Pi 5). The package is
 # PUBLIC, so gateways pull with no credentials. If this key is ever removed,
 # Supervisor falls back to an on-device build from the Dockerfile.
-# DEV-DEPLOY (device-pairing verification): commented out so Supervisor builds
-# the agent on-device from the Dockerfile — the GHCR image predates the
-# uncommitted pairing code. RESTORE this line before the feature ships so the
-# fleet pulls CI's prebuilt image again.
-# image: ghcr.io/prameg/smart-home-edge/{arch}-smart_home_agent
+#
+# Keep this key ENABLED on main: `main` is the branch every gateway's add-on
+# store reads, so a commented-out `image:` makes the whole fleet compile the Go
+# binary on-device. The local dev loop does not need it removed —
+# scripts/sync-addon-to-vm.sh strips the key itself when it builds the tarball.
+#
+# `version:` above must always have a matching published image tag. Bump the
+# version and push a `vX.Y.Z` tag together, or Supervisor asks GHCR for an image
+# that does not exist and every install/update fails.
+image: ghcr.io/prameg/smart-home-edge/{arch}-smart_home_agent
 description: >-
   Bridges this Home Assistant instance to the smart-home cloud: self-provisions,
   connects to the cloud MQTT broker over TLS with a persistent session, and
