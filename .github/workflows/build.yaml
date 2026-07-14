@@ -30,9 +30,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # aarch64 is the Pi 5 target; the rest cover CI / other boards and match
-        # config.yaml `arch:` and build.yaml.
-        arch: [aarch64, amd64, armv7]
+        # aarch64 is the Pi 5 target; amd64 covers CI / dev boards. This list
+        # MUST match config.yaml `arch:` — the HA builder refuses any arch the
+        # add-on doesn't declare ("<arch> not supported for this add-on") and
+        # fails the run. armv7 was here but is not in config.yaml `arch:`, so its
+        # leg always failed and reddened every release build.
+        arch: [aarch64, amd64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
