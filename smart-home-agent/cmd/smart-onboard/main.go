@@ -112,6 +112,9 @@ type options struct {
 	mqttTLS       bool
 	mqttInsecure  bool
 	logLevel      string
+	zigbeePort    string
+	zigbeeAdapter string
+	zigbeeBaud    int
 	ownerName     string
 	ownerUsername string
 	ownerPassword string
@@ -164,6 +167,7 @@ func run() error {
 		Owner:        opts.owner(),
 		CoreConfig:   opts.coreConfig(),
 		AgentOptions: opts.agentOptions(),
+		Zigbee:       opts.zigbee(),
 		Timeouts: onboard.Timeouts{
 			WaitCore:      opts.waitCore,
 			WaitProvision: opts.waitProvision,
@@ -202,6 +206,9 @@ func parseFlags() (options, map[string]bool, error) {
 	flag.BoolVar(&opts.mqttTLS, "mqtt-tls", true, "use TLS to the broker")
 	flag.BoolVar(&opts.mqttInsecure, "mqtt-tls-insecure", false, "skip broker certificate verification (dev only)")
 	flag.StringVar(&opts.logLevel, "agent-log-level", "info", "agent add-on log level (debug|info|warning|error)")
+	flag.StringVar(&opts.zigbeePort, "zigbee-port", "/dev/ttyACM0", "Zigbee coordinator serial device written to the Zigbee2MQTT add-on (empty disables Zigbee setup). For a dd golden image use a serial-agnostic node like /dev/ttyACM0 — a per-unit /dev/serial/by-id path embeds one dongle's serial and breaks clones")
+	flag.StringVar(&opts.zigbeeAdapter, "zigbee-adapter", "ember", "Zigbee2MQTT adapter driver: ember (Sonoff ZBDongle-E / EFR32), zstack (ZBDongle-P / CC2652), deconz, zigate, ezsp, zboss")
+	flag.IntVar(&opts.zigbeeBaud, "zigbee-baudrate", 0, "Zigbee coordinator baudrate (0 = adapter default)")
 	flag.StringVar(&opts.ownerName, "owner-name", "Smart Home", "HA owner display name")
 	flag.StringVar(&opts.ownerUsername, "owner-username", "admin", "HA owner username")
 	flag.StringVar(&opts.ownerPassword, "owner-password", os.Getenv("SMART_ONBOARD_OWNER_PASSWORD"), "HA owner password (or SMART_ONBOARD_OWNER_PASSWORD; prompted if absent)")
@@ -237,6 +244,11 @@ func parseFlags() (options, map[string]bool, error) {
 	}
 	if opts.dev && opts.mqttHost == "" {
 		opts.mqttHost = devHostReachAddr
+	}
+	// A dev VM has no real coordinator (Tracks 2/3 pair against a fake light), so
+	// default Zigbee setup off there; an explicit --zigbee-port still enables it.
+	if opts.dev && !provided["zigbee-port"] {
+		opts.zigbeePort = ""
 	}
 
 	return opts, provided, nil
@@ -463,6 +475,7 @@ func confirmSummary(o options, p *prompter, out io.Writer) (bool, error) {
 	fmt.Fprintf(out, "  gateway:  %s\n", o.host)
 	fmt.Fprintf(out, "  cloud:    %s\n", o.cloudBaseURL)
 	fmt.Fprintf(out, "  broker:   %s:%d (tls=%v)\n", o.mqttHost, o.mqttPort, o.mqttTLS)
+	fmt.Fprintf(out, "  zigbee:   %s\n", zigbeeSummary(o))
 	fmt.Fprintf(out, "  owner:    %s\n", o.ownerUsername)
 	fmt.Fprintf(out, "  country:  %s\n", orNone(o.country))
 	fmt.Fprintf(out, "  serial:   %s\n", serialOrAuto(o.serial))
@@ -514,6 +527,17 @@ func (o options) agentOptions() map[string]any {
 	return opts
 }
 
+// zigbee builds the coordinator radio config for the Zigbee2MQTT add-on. An empty
+// port disables the Zigbee onboarding step (dev VMs, or units configured out of
+// band).
+func (o options) zigbee() onboard.ZigbeeConfig {
+	return onboard.ZigbeeConfig{
+		Port:     o.zigbeePort,
+		Adapter:  o.zigbeeAdapter,
+		Baudrate: o.zigbeeBaud,
+	}
+}
+
 // defaultMQTTHost proposes the cloud host as the broker host, the common case
 // where the cloud and broker share a domain — an empty string when the cloud URL
 // is not yet a parseable URL, which just means no default is offered.
@@ -532,6 +556,16 @@ func masked(secret string) string {
 	}
 
 	return "•••• set"
+}
+
+// zigbeeSummary renders the coordinator line for the pre-run summary, making a
+// disabled (empty-port) setup read as a deliberate skip rather than a blank.
+func zigbeeSummary(o options) string {
+	if o.zigbeePort == "" {
+		return "(skipped — no coordinator configured)"
+	}
+
+	return fmt.Sprintf("%s (adapter %s)", o.zigbeePort, o.zigbeeAdapter)
 }
 
 func orNone(s string) string {

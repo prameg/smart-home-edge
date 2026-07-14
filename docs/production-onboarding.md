@@ -85,7 +85,13 @@ mosquitto_pub -h mqtt.prameg.net -p 8883 -u "$U" -P "$P" \
    unit. Otherwise `smart-onboard` reports *"owner already exists"* and you must
    supply that owner's credentials or re-flash. (Don't mix the browser wizard
    with the CLI on the same device.)
-3. **The unit itself** must reach production (not just your laptop). From the HA
+3. **Plug in the Zigbee coordinator** (Sonoff **ZBDongle-E**) before onboarding.
+   On a Pi 5 whose only serial device is the dongle it enumerates as
+   `/dev/ttyACM0` — the default `smart-onboard` writes into Zigbee2MQTT. Confirm
+   from the HA host's shell if unsure: `ls -l /dev/serial/by-id/` (a ZBDongle-E
+   shows an `…Sonoff_Zigbee_3.0_USB_Dongle_Plus…-if00` entry). If a unit has extra
+   serial hardware, pass the concrete node with `--zigbee-port`.
+4. **The unit itself** must reach production (not just your laptop). From the HA
    host's shell (Settings → Terminal, or the VM console):
 
    ```bash
@@ -140,6 +146,9 @@ now.)
   `SMART_ONBOARD_OWNER_PASSWORD`.
 - Optional: `--timezone Asia/Riyadh`, `--currency SAR`, `--serial <override>`,
   `--wait-core`, `--wait-provision`.
+- Zigbee radio (defaults suit the ZBDongle-E): `--zigbee-port` (default
+  `/dev/ttyACM0`; **empty disables** the Zigbee step), `--zigbee-adapter` (default
+  `ember`; use `zstack` for a ZBDongle-P), `--zigbee-baudrate` (0 = adapter default).
 
 ### Steps it performs
 
@@ -149,6 +158,7 @@ now.)
 | `owner-and-token` | Create the HA owner (or log in on a re-run), mint a long-lived token, set country/time zone. |
 | `addon-repository` | Add `https://github.com/prameg/smart-home-edge` to the add-on store. |
 | `install-addons` | Install agent + Mosquitto + Zigbee2MQTT + Matter Server at **latest** (the version-free bootstrap set; no pinning). |
+| `configure-zigbee` | Point Zigbee2MQTT at the coordinator (`/dev/ttyACM0`, adapter `ember` by default) and start it, so the unit can pair on day one. Skipped if `--zigbee-port` is empty. |
 | `configure-agent` | Set the agent's `cloud_base_url`, `factory_key`, `mqtt_*` options. |
 | `start-agent` | Start the agent add-on. |
 | `await-provision` | Wait for the agent to provision and read back `uid` + **claim code** (bounded by `--wait-provision`, default 5m). |
@@ -197,6 +207,8 @@ not hand-create device rows.
 
 ## 4. Verify the round trip
 
+### 4a. No-hardware path (VM / `Onboarding`)
+
 If the unit has no real hardware (e.g. the `Onboarding` VM), use the built-in
 test light:
 
@@ -207,6 +219,30 @@ test light:
 4. Toggle it in HA → the device's `reported_state` updates in the cloud (needs
    `mqtt:subscribe` + the queue worker).
 5. Control it from the cloud → the downlink actuates HA.
+
+### 4b. Real coordinator (production units — required before cutting a golden image)
+
+The fake light exercises the cloud round-trip but **not** the Zigbee radio, which
+is the first thing a real installer uses. Do this on any unit with a coordinator,
+and always on the reference unit before imaging (`configure-zigbee` bakes the
+radio into the golden image, so the reference unit must prove it works):
+
+1. **Z2M came up on the coordinator.** Settings → Add-ons → **Zigbee2MQTT** →
+   started, and its log shows the adapter connecting (e.g. `ember`/`EmberZNet`
+   started, coordinator firmware line) — **not** `Error: Failed to connect` /
+   `Error while opening serialport`. If it can't open the port, the dongle isn't
+   at the configured `--zigbee-port` (re-check `ls -l /dev/serial/by-id/`).
+2. **Pair a real device.** Cloud → the claimed home → **Pair device** (or the HA
+   **Smart Home** panel) → put a sensor/bulb into pairing → it joins (Z2M logs
+   `Device … successfully joined`).
+3. **The paired device reaches the cloud.** It registers under the home's
+   **Devices** and its state updates on change (motion, on/off), same
+   `reported_state` path as the fake light.
+4. **Control round-trips** for a controllable device (bulb/switch): actuate from
+   the cloud → the physical device responds.
+
+Only once 4b passes end-to-end on the reference unit is it safe to
+[cut the golden image](golden-image.md).
 
 Health checks:
 
@@ -227,6 +263,8 @@ retained `availability`.
 | `401` on `owner-and-token`/`addon-repository` right after boot | Core's HTTP socket is up but auth/onboarding isn't yet | Wait until the HA onboarding screen actually loads in a browser, then re-run. |
 | `401` on store/add-on steps that persists across re-runs | Old `smart-onboard` binary (HA locked the `/api/hassio` REST proxy) | Rebuild from `cmd/smart-onboard`; current builds use the `supervisor/api` WS command. |
 | Provisioning returns `401` | Factory key mismatch | `--factory-key` must equal the cloud's `SMART_HOME_PROVISIONING_FACTORY_KEY`. |
+| `configure-zigbee` fails, or Z2M log shows `Failed to connect` / `Error while opening serialport` | Coordinator not at the configured port (unplugged, or a non-`/dev/ttyACM0` node) | Confirm the dongle: `ls -l /dev/serial/by-id/`; re-run with `--zigbee-port <node>`. On a `dd` golden image keep it serial-agnostic (`/dev/ttyACM0`), not a per-unit `by-id` path. |
+| Z2M started but `Pair device` never joins anything | Wrong adapter driver, or coordinator firmware | ZBDongle-E uses `--zigbee-adapter ember`; a ZBDongle-P uses `zstack`. Check the Z2M log's adapter line matches the physical dongle. |
 | Agent connects but every publish is ACL-denied | Broker secret mismatch, or go-auth can't reach the cloud | Align `SMART_HOME_BROKER_AUTH_SECRET` on the cloud and `infra/.env`; check `docker compose logs` on the broker. |
 | "owner already exists" on a supposedly fresh unit | Image isn't fresh (cloned snapshot, or someone used the browser wizard) | Supply that owner's credentials, or re-flash stock HAOS ([`haos-vm-reset.md`](haos-vm-reset.md) for the VirtualBox VM). |
 | Claim code invalid/expired | TTL elapsed (default 24h, `SMART_HOME_CLAIM_CODE_TTL_HOURS`) or typo | Reissue from the Smart Home panel → **Reissue claim code**. |

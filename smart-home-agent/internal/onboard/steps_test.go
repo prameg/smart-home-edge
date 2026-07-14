@@ -311,6 +311,105 @@ func TestConfigureAgentStepRestartsRunningAddon(t *testing.T) {
 	})
 }
 
+// configure-zigbee points Z2M at the coordinator and starts it, is idempotent on
+// a resumed run, restarts a Z2M already running with stale radio options, and is
+// skipped entirely when no coordinator is configured (the dev-VM / fake-light case).
+func TestConfigureZigbeeStep(t *testing.T) {
+	manifest := func() *fleet.Manifest {
+		return &fleet.Manifest{
+			AddonRepository: "https://repo.test",
+			Addons: []fleet.Addon{
+				{Name: "Zigbee2MQTT", Match: "zigbee2mqtt", Repository: "https://z2m.test"},
+				{Name: "Smart Home Agent", Match: "smart_home_agent", Repository: "https://repo.test"},
+			},
+		}
+	}
+	zcfg := ZigbeeConfig{Port: "/dev/ttyACM0", Adapter: "ember"}
+
+	t.Run("configures a stopped add-on and starts it", func(t *testing.T) {
+		step := configureZigbeeStep(&captureReporter{})
+		dev := newFakeDevice()
+		dev.knownSlugs = []string{"hash_zigbee2mqtt"}
+		dev.addons["hash_zigbee2mqtt"] = &AddonInfo{Slug: "hash_zigbee2mqtt", Installed: true, State: "stopped"}
+		st := &State{Client: dev, Manifest: manifest(), Zigbee: zcfg}
+
+		done, err := step.Check(context.Background(), st)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if done {
+			t.Fatal("Check should report not-done before the radio is configured")
+		}
+
+		if err := step.Act(context.Background(), st); err != nil {
+			t.Fatalf("Act: %v", err)
+		}
+
+		serial, _ := dev.options["hash_zigbee2mqtt"]["serial"].(map[string]any)
+		if serial["port"] != "/dev/ttyACM0" || serial["adapter"] != "ember" {
+			t.Errorf("Z2M serial options not written: %+v", dev.options["hash_zigbee2mqtt"])
+		}
+		if dev.starts["hash_zigbee2mqtt"] != 1 {
+			t.Errorf("a stopped Z2M must be started once, got %d", dev.starts["hash_zigbee2mqtt"])
+		}
+		if dev.restarts["hash_zigbee2mqtt"] != 0 {
+			t.Errorf("a stopped Z2M must not be restarted, got %d", dev.restarts["hash_zigbee2mqtt"])
+		}
+
+		if err := step.Verify(context.Background(), st); err != nil {
+			t.Errorf("Verify: %v", err)
+		}
+
+		done, err = step.Check(context.Background(), st)
+		if err != nil || !done {
+			t.Errorf("Check should short-circuit once configured+started: done=%v err=%v", done, err)
+		}
+	})
+
+	t.Run("restarts an add-on already running with stale radio options", func(t *testing.T) {
+		step := configureZigbeeStep(&captureReporter{})
+		dev := newFakeDevice()
+		dev.knownSlugs = []string{"hash_zigbee2mqtt"}
+		dev.addons["hash_zigbee2mqtt"] = &AddonInfo{
+			Slug: "hash_zigbee2mqtt", Installed: true, State: "started",
+			Options: map[string]any{"serial": map[string]any{"port": "/dev/ttyUSB0", "adapter": "zstack"}},
+		}
+		st := &State{Client: dev, Manifest: manifest(), Zigbee: zcfg}
+
+		done, err := step.Check(context.Background(), st)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if done {
+			t.Fatal("stale radio options must not satisfy Check")
+		}
+
+		if err := step.Act(context.Background(), st); err != nil {
+			t.Fatalf("Act: %v", err)
+		}
+		if dev.restarts["hash_zigbee2mqtt"] != 1 {
+			t.Errorf("a running Z2M with changed options must be restarted once, got %d", dev.restarts["hash_zigbee2mqtt"])
+		}
+	})
+
+	t.Run("skipped when no coordinator configured", func(t *testing.T) {
+		step := configureZigbeeStep(&captureReporter{})
+		dev := newFakeDevice() // no zigbee slug known — resolve would fail if the step tried
+		st := &State{Client: dev, Manifest: manifest(), Zigbee: ZigbeeConfig{}}
+
+		done, err := step.Check(context.Background(), st)
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		if !done {
+			t.Fatal("an unconfigured coordinator must skip the step (done=true)")
+		}
+		if err := step.Verify(context.Background(), st); err != nil {
+			t.Errorf("Verify must no-op when unconfigured: %v", err)
+		}
+	})
+}
+
 // The await-provision step captures the uid + claim code onto the State.
 func TestAwaitProvisionStepCapturesClaim(t *testing.T) {
 	step := awaitProvisionStep(&captureReporter{})

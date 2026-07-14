@@ -128,8 +128,15 @@ const agentMatch = "smart_home_agent"
 
 // Agent returns the agent add-on entry, or nil when absent.
 func (m *Manifest) Agent() *Addon {
+	return m.Find(agentMatch)
+}
+
+// Find returns the add-on whose Match equals match, or nil when absent. Used to
+// single out a specific bootstrap add-on (the agent, Zigbee2MQTT) for a step
+// that configures it beyond a plain install.
+func (m *Manifest) Find(match string) *Addon {
 	for i := range m.Addons {
-		if m.Addons[i].Match == agentMatch {
+		if m.Addons[i].Match == match {
 			return &m.Addons[i]
 		}
 	}

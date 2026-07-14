@@ -2,6 +2,7 @@ package onboard
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/smart-home/edge/agent/fleet"
@@ -161,6 +162,48 @@ type Timeouts struct {
 	WaitProvision time.Duration
 }
 
+// ZigbeeConfig is the coordinator radio written to the Zigbee2MQTT add-on so a
+// freshly onboarded gateway can pair devices immediately, instead of installing
+// Z2M and sitting broken until a human points it at the dongle — which is exactly
+// what makes the setup team's *first* action (pair a sensor) fail on a fresh
+// unit. Port and Adapter are the Z2M add-on's `serial.*` options (its schema:
+// adapter is match(zstack|deconz|zigate|ezsp|ember|zboss)).
+type ZigbeeConfig struct {
+	// Port is the coordinator's serial device. For the golden image it MUST be
+	// serial-agnostic: a `dd` clone shares one Z2M options.json across every unit,
+	// so a /dev/serial/by-id/… path that embeds the reference dongle's serial
+	// number would break every other unit. "/dev/ttyACM0" (the ZBDongle-E's CDC
+	// node) is stable on a factory Pi whose only serial device is the coordinator;
+	// a unit with extra serial hardware can override with a by-id path.
+	Port string
+	// Adapter is the zigbee-herdsman driver: "ember" for the EFR32-based Sonoff
+	// ZBDongle-E (the locked dongle), "zstack" for the CC2652-based ZBDongle-P.
+	Adapter string
+	// Baudrate overrides the driver default when non-zero; ember's default is
+	// correct, so it is normally left 0 (omitted).
+	Baudrate int
+}
+
+// Configured reports whether a coordinator was specified. An empty Port disables
+// the Zigbee step — the dev VM has no real radio and validates pairing against a
+// fake light entity instead.
+func (z ZigbeeConfig) Configured() bool { return strings.TrimSpace(z.Port) != "" }
+
+// serialOptions renders the Zigbee2MQTT add-on's `serial` option object. Omitted
+// keys fall back to the add-on's own schema defaults (SetAddonOptions replaces,
+// not merges), so sending just port+adapter is safe.
+func (z ZigbeeConfig) serialOptions() map[string]any {
+	serial := map[string]any{"port": z.Port}
+	if z.Adapter != "" {
+		serial["adapter"] = z.Adapter
+	}
+	if z.Baudrate > 0 {
+		serial["baudrate"] = z.Baudrate
+	}
+
+	return serial
+}
+
 // State is the shared, mutating context threaded through every step: the fixed
 // inputs (client, manifest, owner, agent options, timeouts) plus values
 // accumulated as the run progresses (token, resolved agent slug, provisioned
@@ -171,6 +214,7 @@ type State struct {
 	Owner        OwnerConfig
 	CoreConfig   CoreConfig
 	AgentOptions map[string]any
+	Zigbee       ZigbeeConfig
 	Timeouts     Timeouts
 
 	// Dev switches the run to developer mode: the install-addons step SKIPS the

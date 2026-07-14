@@ -13,14 +13,19 @@ import (
 // Step names are stable identifiers (used in output and, on failure, in the
 // "re-run to resume" guidance). Keep them short and greppable.
 const (
-	StepConnect        = "connect"
-	StepOwnerAndToken  = "owner-and-token"
-	StepAddonRepos     = "addon-repository"
-	StepInstallAddons  = "install-addons"
-	StepConfigureAgent = "configure-agent"
-	StepStartAgent     = "start-agent"
-	StepAwaitProvision = "await-provision"
+	StepConnect         = "connect"
+	StepOwnerAndToken   = "owner-and-token"
+	StepAddonRepos      = "addon-repository"
+	StepInstallAddons   = "install-addons"
+	StepConfigureZigbee = "configure-zigbee"
+	StepConfigureAgent  = "configure-agent"
+	StepStartAgent      = "start-agent"
+	StepAwaitProvision  = "await-provision"
 )
+
+// zigbeeAddonMatch is the manifest `match` of the Zigbee2MQTT add-on
+// (fleet/release.json), used to single it out for radio configuration.
+const zigbeeAddonMatch = "zigbee2mqtt"
 
 // installTimeout bounds a single add-on install/update; a first install pulls a
 // container image and can take several minutes on a Pi over a slow link.
@@ -37,6 +42,7 @@ func BuildSteps(reporter Reporter) []Step {
 		ownerAndTokenStep(reporter),
 		addonRepositoryStep(reporter),
 		installAddonsStep(reporter),
+		configureZigbeeStep(reporter),
 		configureAgentStep(reporter),
 		startAgentStep(reporter),
 		awaitProvisionStep(reporter),
@@ -348,6 +354,138 @@ func requireLocalAgent(ctx context.Context, st *State, reporter Reporter) error 
 	}
 
 	return fmt.Errorf("the local agent add-on (%s) is not installed yet — install it from your checkout (scripts/sync-addon-to-vm.sh serve, then add it via the HA UI), then re-run to resume", LocalAgentSlug)
+}
+
+// configureZigbeeStep points the Zigbee2MQTT add-on at the coordinator radio and
+// starts it, so a freshly onboarded gateway (and the golden image cut from it)
+// can pair devices immediately. Without it Z2M installs and sits broken with no
+// adapter, and `pairing.start` -> `permit_join` has nothing to talk to — the
+// first thing the setup team tries fails. Skipped when no coordinator is
+// configured (the dev VM has no radio and validates pairing against a fake light).
+//
+// Idempotent: Check passes once the add-on already carries our radio options and
+// is started, so a resumed run skips it.
+func configureZigbeeStep(reporter Reporter) Step {
+	return Step{
+		Name: StepConfigureZigbee,
+		Check: func(ctx context.Context, st *State) (bool, error) {
+			if !st.Zigbee.Configured() {
+				return true, nil
+			}
+
+			slug, found, err := resolveZigbeeSlug(ctx, st)
+			if err != nil || !found {
+				return false, err
+			}
+
+			info, err := st.Client.AddonInfo(ctx, slug)
+			if err != nil {
+				return false, err
+			}
+
+			return zigbeeSerialSatisfied(info.Options, st.Zigbee) && info.State == "started", nil
+		},
+		Act: func(ctx context.Context, st *State) error {
+			slug, found, err := resolveZigbeeSlug(ctx, st)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("Zigbee2MQTT add-on is not in the store yet (try re-running to resume)")
+			}
+
+			reporter.Info(fmt.Sprintf("pointing Zigbee2MQTT at the coordinator (%s, adapter %q)", st.Zigbee.Port, st.Zigbee.Adapter))
+			if err := st.Client.SetAddonOptions(ctx, slug, map[string]any{"serial": st.Zigbee.serialOptions()}); err != nil {
+				return err
+			}
+
+			// Home Assistant loads add-on options only at container start. Restart
+			// Z2M if it was already running (e.g. a resumed run correcting a wrong
+			// port), otherwise start it for the first time so the radio comes up.
+			info, err := st.Client.AddonInfo(ctx, slug)
+			if err != nil {
+				return err
+			}
+			if info.State == "started" {
+				reporter.Info("restarting Zigbee2MQTT to apply the coordinator configuration")
+
+				return st.Client.RestartAddon(ctx, slug)
+			}
+
+			reporter.Info("starting Zigbee2MQTT")
+
+			return st.Client.StartAddon(ctx, slug)
+		},
+		Verify: func(ctx context.Context, st *State) error {
+			if !st.Zigbee.Configured() {
+				return nil
+			}
+
+			slug, found, err := resolveZigbeeSlug(ctx, st)
+			if err != nil {
+				return err
+			}
+			if !found {
+				return fmt.Errorf("Zigbee2MQTT add-on did not resolve")
+			}
+
+			info, err := st.Client.AddonInfo(ctx, slug)
+			if err != nil {
+				return err
+			}
+			if !zigbeeSerialSatisfied(info.Options, st.Zigbee) {
+				return fmt.Errorf("Zigbee2MQTT radio options did not persist")
+			}
+
+			// The add-on reaching "started" with the coordinator options set is the
+			// automatable signal. A true permit-join pairing check needs a physical
+			// device to join, so it lives in the acceptance runbook, not here.
+			for attempt := 0; attempt < 15; attempt++ {
+				info, err := st.Client.AddonInfo(ctx, slug)
+				if err != nil {
+					return err
+				}
+				if info.State == "started" {
+					return nil
+				}
+
+				if err := sleep(ctx, 2*time.Second); err != nil {
+					return err
+				}
+			}
+
+			return fmt.Errorf("Zigbee2MQTT did not reach the started state (is the coordinator plugged in at %s?)", st.Zigbee.Port)
+		},
+	}
+}
+
+// resolveZigbeeSlug maps the manifest's Zigbee2MQTT add-on to its full store slug.
+func resolveZigbeeSlug(ctx context.Context, st *State) (string, bool, error) {
+	addon := st.Manifest.Find(zigbeeAddonMatch)
+	if addon == nil {
+		return "", false, fmt.Errorf("manifest has no Zigbee2MQTT add-on")
+	}
+
+	return st.Client.ResolveAddonSlug(ctx, *addon)
+}
+
+// zigbeeSerialSatisfied reports whether the Z2M add-on's current options already
+// carry our coordinator port + adapter. It compares only the fields we set, so
+// extra defaults the add-on fills into `serial` (baudrate, rtscts) do not trip a
+// needless re-write on a resumed run.
+func zigbeeSerialSatisfied(current map[string]any, z ZigbeeConfig) bool {
+	serial, ok := current["serial"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if !jsonEqual(serial["port"], z.Port) {
+		return false
+	}
+	if z.Adapter != "" && !jsonEqual(serial["adapter"], z.Adapter) {
+		return false
+	}
+
+	return true
 }
 
 // configureAgentStep writes the agent add-on's options (cloud URL, factory key,

@@ -86,10 +86,17 @@ identical image — the clone does not inherit the reference unit's `uid`.
 ## Build pipeline (cut a new golden image)
 
 1. **Bring up a reference unit.** Flash stock HAOS on a clean unit of the target
-   hardware (Pi 5 today), boot it on the network, and run `smart-onboard`
-   against the **production** cloud + broker with the real factory key (see
+   hardware (Pi 5 today), plug in the Zigbee coordinator (ZBDongle-E), boot it on
+   the network, and run `smart-onboard` against the **production** cloud + broker
+   with the real factory key (see
    [`production-onboarding.md`](production-onboarding.md)). Let it fully
-   provision and confirm it surfaces a claim code.
+   provision and confirm it surfaces a claim code. The `configure-zigbee` step
+   bakes the radio config (`serial.port` + `serial.adapter`) into the Zigbee2MQTT
+   add-on, which the `dd` clone carries to every unit — so keep the port
+   **serial-agnostic** (`/dev/ttyACM0`, the default), never a `/dev/serial/by-id/…`
+   path that embeds this dongle's serial and would break every other unit.
+   **Before imaging, confirm section 4b (real-coordinator pairing) passes** — the
+   whole point of baking the radio is that a flashed unit pairs on day one.
 2. **Let it update (optional but recommended).** Leave it running a while so its
    self-check + `auto_update` pull everything to the latest; this bakes a warm,
    up-to-date starting point. (Skippable — field units update themselves after
@@ -120,7 +127,9 @@ Re-bake only when the **bootstrap floor** moves, not on every release:
 - The bootstrap add-on set in [`fleet/release.json`](../smart-home-agent/fleet/release.json)
   changes (an add-on added/removed), or
 - The factory key is rotated, or
-- The cloud/broker endpoints baked into `options.json` change.
+- The cloud/broker endpoints baked into `options.json` change, or
+- The Zigbee coordinator model (and thus the baked `serial.port`/`serial.adapter`)
+  changes — e.g. moving from the ZBDongle-E (`ember`) to a ZBDongle-P (`zstack`).
 
 Routine agent/Core/add-on version bumps do **not** require a re-bake: field units
 pull them via `auto_update` + the daily self-check. This keeps image churn low —
